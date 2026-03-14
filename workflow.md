@@ -1,29 +1,105 @@
 # Beat Production Workflow
 
-## Step 1: Research
-- Pull YouTube tutorial transcripts for the target genre before writing any code
-- Use transcripts as the primary guide for drum patterns, arrangement, and mixing decisions
-- Note specific techniques mentioned (e.g., dembow rim accent on 2.5, trap hi-hat rolls, sidechain before snare)
-- Download and analyze actual reference tracks with music-analysis MCP (chroma, BPM)
-- Cross-check tutorial claims against empirical data — tutorials can be wrong about key/tempo
+## Step 1: Research — Pick ONE Source of Truth
+
+You have two research paths. Pick one per project and commit to it.
+
+### Path A: Reference Track Analysis (preferred)
+Run `analyze_reference.py` on a reference track you want to match.
+```bash
+python analyze_reference.py /path/to/reference.mp3
+```
+This gives you everything you need to clone the vibe:
+- **BPM, key, scale** — use these exactly, don't guess
+- **Chord progression + voicings** — copy the cycle and voice chords at the given octaves
+- **Drum pattern** — kick/clap/hh grid positions, swing %, triplet hats, crash interval
+- **Bass pattern** — rhythm + roots per chord bar
+- **Melody layers** — notes per register (pad/main/top), cycle length
+- **Song structure** — section boundaries (intro/verse/hook/bridge) with bar ranges
+- **Genre + mood + energy** — confirms what you're building
+- **Instruments** — bass type (808/sub/synth/pluck), drum sub-types, melody timbres (strings/pluck/lead_synth/bell)
+- **Mix profile** — stereo width per band, EQ balance, reverb decay, vocal presence
+- **Energy curve** — per-bar dynamics to shape your arrangement
+
+Use `ref_analysis.json` as your spec. Every decision in compose/render should trace back to a field in this JSON.
+
+### Path B: YouTube Tutorial Transcripts
+Pull transcripts via the youtube-transcript MCP for the target genre.
+```
+get_transcript(video_id="S4CdACq0TuI")
+```
+Extract and follow:
+- BPM, key, scale choices
+- Chord voicing techniques (half-step tension, suspended chords, inversions)
+- Drum pattern construction order (snare first, then hats, then 808)
+- Mixing levels (kick+808 loudest, snare -2/-3dB, melody -6dB)
+- Arrangement structure (intro bars, hook length, bridge placement)
+- Genre-specific techniques (dembow rim accent, trap hat rolls, sidechain timing)
+
+Tutorials give you *why* and *how*. Analysis gives you *what*. If a tutorial contradicts the analysis data, trust the analysis — tutorials can be wrong about key/tempo.
+
+### Do NOT mix paths without declaring priority
+If you use both, state which one wins on conflicts. Default: analysis data overrides tutorial claims.
 
 ## Step 2: Compose (compose_*.py)
-- Define key, BPM, chord progression, and song structure first
+
+### If using Path A (reference analysis):
+- Set BPM, key, scale from `ref_analysis.json`
+- Copy chord cycle verbatim from `chords` + `chord_voicings`
+- Replicate drum grid positions from `drum_pattern` (kick/clap/hh arrays)
+- Match swing % from `swing_pct`
+- Bass rhythm from `bass_pattern`, roots from `bass_roots`
+- Melody: use note density and register split from `melody_layers`
+- Structure: match section boundaries from `sections`
+- Energy: follow `energy_curve` shape for dynamics across bars
+
+### If using Path B (tutorial transcripts):
+- Follow the tutorial's BPM, key, chord progression
+- Build drums in the order the tutorial specifies
+- Apply the mixing level hierarchy from the tutorial
+- Use the arrangement structure from the tutorial
+
+### General compose rules:
 - Keep melodies quiet and lowkey — low velocity (38-58), sparse notes, lots of rests
 - Melody should sit behind the drums and bass, not compete with them
 - Use music21 for MIDI generation with separate parts per instrument
 - Export individual MIDI stems + full arrangement MIDI (track in git for re-rendering)
-- Add inline timbre guard comments for critical design decisions (e.g., "MELODY TIMBRE RULE: sine+triangle, not saw") to prevent regressions across versions
-- Hook octave pattern: within each 16-bar hook (4 cycles of 4 bars), shift melody octaves as [base, base, +1, +1] — first 8 bars establish, last 8 bars lift. Both hooks must use the same pattern.
+- Add inline timbre guard comments for critical design decisions (e.g., "MELODY TIMBRE RULE: sine+triangle, not saw")
+- Hook octave pattern: within each 16-bar hook (4 cycles of 4 bars), shift melody octaves as [base, base, +1, +1]
 
 ## Step 3: Sound Selection
-- Rotate sample kits between projects — avoid reusing the same kick/snare/hat across beats
-- Available kits: Obie Trap, Juicy Jules Stardust, REGGAETON 4, URBANO, reggaetondrums, and others in /instruments
+
+### If using Path A (reference analysis):
+- Check `instruments.bass.type` — if "808", pick an 808 sample; if "sub_bass", pick a sub; etc.
+- Check `instruments.drums.*_type` — match kick/snare/hh sub-types
+- Check `instruments.melody.*.type` — match pad/main/top timbres (strings/pluck/lead_synth/bell)
+- If `instruments.*.closest_samples` exists, start with those matches from your library
+- Use `instruments.*.features` to verify: brightness, attack, decay, sub energy should be in the same ballpark
+- Use `SampleSelector` from `instruments_query.py` with the detected genre:
+  ```python
+  from instruments_query import SampleSelector
+  sel = SampleSelector(genre=ref['genre'], key=ref['key'])
+  KICK = sel.pick('kick')
+  ```
+
+### If using Path B (tutorial transcripts):
+- Follow sample type recommendations from the tutorial
 - Match samples to genre (don't use trap 808s on reggaeton, don't use reggaeton rims on trap)
-- Listen to reference tracks in the target genre to guide sample choice
+
+### General sound selection rules:
+- Rotate sample kits between projects — avoid reusing the same kick/snare/hat across beats
 - Consider pitch-shifting samples for character (e.g., hi-hats down -2/-3st for darker feel)
 
 ## Step 4: Render (render_*.py)
+
+### If using Path A (reference analysis):
+- Target `mix_profile.eq_balance_db` values for your EQ settings
+- Match `mix_profile.stereo_width` per band — keep sub mono, widen highs
+- Set reverb send to approximate `mix_profile.reverb_decay_s`
+- If `vocal_presence` is low across all sections, skip vocal processing chain
+- Target the reference's `loudness_lufs` for your master level
+
+### General render rules:
 - Step 0: MIDI fix — strip duplicate tempo events, save as *_FIXED.mid
 - FAUST DSP for synths (pad, lead) via dawdreamer
 - Pedalboard for effects chains (EQ, compression, reverb, limiting)
@@ -72,9 +148,7 @@
 - Avoid keys of C (C major, C minor) — overused and generic-sounding. Pick keys with more character (F minor, G minor, D minor, Ab major, etc.)
 - Melodies should be quiet and lowkey — never louder than drums/bass
 - Don't default to the same samples every time — explore the kits
-- Always check YouTube transcripts for genre-specific production tips
 - Run the full analytics pipeline (LUFS + spectral) on every render
 - Pad and lead must be high-passed to stay out of the bass frequency range
 - Add timbre guard comments on critical mix decisions to prevent regressions
-- Cross-validate tutorial info against real audio analysis — don't trust blindly
 - Every render should produce a new version number, never overwrite previous renders
