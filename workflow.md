@@ -60,6 +60,7 @@ If you use both, state which one wins on conflicts. Default: analysis data overr
 - Use the arrangement structure from the tutorial
 
 ### General compose rules:
+- Melody source: use chord progressions from `/Users/ronantakizawa/Documents/instruments/chordprogressions` — derive melodies from chord top notes, passing tones from the key's scale
 - Keep melodies quiet and lowkey — low velocity (38-58), sparse notes, lots of rests
 - Melody should sit behind the drums and bass, not compete with them
 - Use music21 for MIDI generation with separate parts per instrument

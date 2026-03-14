@@ -147,7 +147,167 @@ def step1_separate(input_path, output_dir):
 # STEP 2 — GLOBAL PROPERTIES  (reuses compare_beats.py extraction pattern)
 # ============================================================================
 
-def step2_global(input_path):
+# Camelot wheel lookup — (note_name, 'minor'|'major') -> Camelot code
+_CAMELOT = {
+    ('Ab', 'minor'): '1A',  ('G#', 'minor'): '1A',  ('B',  'major'): '1B',
+    ('Eb', 'minor'): '2A',  ('D#', 'minor'): '2A',  ('F#', 'major'): '2B',  ('Gb', 'major'): '2B',
+    ('Bb', 'minor'): '3A',  ('A#', 'minor'): '3A',  ('Db', 'major'): '3B',  ('C#', 'major'): '3B',
+    ('F',  'minor'): '4A',                           ('Ab', 'major'): '4B',  ('G#', 'major'): '4B',
+    ('C',  'minor'): '5A',                           ('Eb', 'major'): '5B',  ('D#', 'major'): '5B',
+    ('G',  'minor'): '6A',                           ('Bb', 'major'): '6B',  ('A#', 'major'): '6B',
+    ('D',  'minor'): '7A',                           ('F',  'major'): '7B',
+    ('A',  'minor'): '8A',                           ('C',  'major'): '8B',
+    ('E',  'minor'): '9A',                           ('G',  'major'): '9B',
+    ('B',  'minor'): '10A',                          ('D',  'major'): '10B',
+    ('F#', 'minor'): '11A', ('Gb', 'minor'): '11A',  ('A',  'major'): '11B',
+    ('C#', 'minor'): '12A', ('Db', 'minor'): '12A',  ('E',  'major'): '12B',
+}
+
+# Pitch-class mapping for enharmonic normalization in key voting
+_PITCH_CLASS = {
+    'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3,
+    'E': 4, 'F': 5, 'F#': 6, 'Gb': 6, 'G': 7, 'G#': 8,
+    'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10, 'B': 11,
+}
+_PC_NAME = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B']
+
+
+def _camelot(key, scale):
+    """Convert key + scale to Camelot notation."""
+    return _CAMELOT.get((key, scale), '?')
+
+
+def _librosa_key(y, sr):
+    """Detect key using librosa chroma CQT on harmonic-separated signal
+    with Krumhansl-Kessler profile correlation."""
+    y_harm = librosa.effects.harmonic(y)
+    chroma = librosa.feature.chroma_cqt(y=y_harm, sr=sr)
+    chroma_mean = np.mean(chroma, axis=1)  # 12 bins: C, C#, D, ..., B
+
+    # Krumhansl-Kessler key-finding profiles (index 0 = tonic)
+    KK_MAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+    KK_MIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+
+    best_key, best_scale, best_corr = 'C', 'major', -1.0
+    for shift in range(12):
+        rotated = np.roll(chroma_mean, -shift)
+        for profile, scale in [(KK_MAJ, 'major'), (KK_MIN, 'minor')]:
+            corr = float(np.corrcoef(rotated, profile)[0, 1])
+            if corr > best_corr:
+                best_corr = corr
+                best_key = _PC_NAME[shift]
+                best_scale = scale
+
+    return best_key, best_scale, round(best_corr, 3)
+
+
+def _vote_key(profiles):
+    """Vote across key detection profiles.
+    profiles: list of (key, scale, strength) tuples.
+    Returns (key, scale, strength, camelot)."""
+    profiles = [(k, s, st) for k, s, st in profiles if k != '?']
+    if not profiles:
+        return '?', '?', 0.0, '?'
+
+    def _canonical(key, scale):
+        """Map to (minor_pitch_class, 'minor') for grouping.
+        Groups relative major/minor and enharmonic equivalents."""
+        pc = _PITCH_CLASS.get(key, -1)
+        if pc < 0:
+            return (key, scale)
+        if scale == 'major':
+            pc = (pc - 3) % 12  # relative minor pitch class
+        return (pc, 'minor')
+
+    from collections import Counter as _C
+    group_votes = _C()
+    group_best = {}  # canonical -> (key, scale, strength)
+    for k, s, st in profiles:
+        canon = _canonical(k, s)
+        group_votes[canon] += 1
+        if canon not in group_best or st > group_best[canon][2]:
+            group_best[canon] = (k, s, st)
+
+    # Pick the group with most votes; ties broken by highest strength
+    top_groups = group_votes.most_common()
+    max_count = top_groups[0][1]
+    tied = [g for g, c in top_groups if c == max_count]
+
+    if len(tied) == 1:
+        best_canon = tied[0]
+    else:
+        best_canon = max(tied, key=lambda g: group_best[g][2])
+
+    # Within the winning group, prefer minor representation
+    winners = [(k, s, st) for k, s, st in profiles
+               if _canonical(k, s) == best_canon]
+    minor_winners = [(k, s, st) for k, s, st in winners if s == 'minor']
+    if minor_winners:
+        best = max(minor_winners, key=lambda x: x[2])
+    else:
+        # No minor voters — derive minor key from canonical pitch class
+        best_major = max(winners, key=lambda x: x[2])
+        if isinstance(best_canon, tuple) and isinstance(best_canon[0], int):
+            minor_key = _PC_NAME[best_canon[0]]
+            best = (minor_key, 'minor', best_major[2])
+        else:
+            best = best_major
+
+    key, scale, strength = best
+    camelot = _camelot(key, scale)
+
+    return key, scale, round(strength, 3), camelot
+
+
+def _correct_bpm(essentia_bpm, y, sr):
+    """Cross-validate BPM with librosa and fix octave errors.
+    Returns the corrected BPM."""
+    # librosa beat tracker for second opinion
+    tempo_lib = librosa.beat.beat_track(y=y, sr=sr)[0]
+    bpm_lib = float(tempo_lib[0]) if hasattr(tempo_lib, '__len__') else float(tempo_lib)
+
+    bpm_e = essentia_bpm
+    bpm_l = bpm_lib
+
+    # Collect all candidates (original + doubled + halved)
+    candidates = set()
+    for b in (bpm_e, bpm_l):
+        candidates.add(round(b))
+        candidates.add(round(b * 2))
+        candidates.add(round(b / 2))
+
+    # Filter to reasonable range (60-220)
+    candidates = [b for b in candidates if 60 <= b <= 220]
+
+    if not candidates:
+        return round(bpm_e)
+
+    # Score each candidate: prefer 100-180 range (most common for modern music)
+    # and prefer agreement between algorithms
+    def _score(bpm):
+        s = 0
+        # Prefer 100-180 range
+        if 100 <= bpm <= 180:
+            s += 2
+        elif 80 <= bpm <= 200:
+            s += 1
+        # Reward agreement with essentia (within 3%)
+        if abs(bpm - bpm_e) / max(bpm, 1) < 0.03:
+            s += 2
+        elif abs(bpm - bpm_e * 2) / max(bpm, 1) < 0.03:
+            s += 1
+        # Reward agreement with librosa (within 3%)
+        if abs(bpm - bpm_l) / max(bpm, 1) < 0.03:
+            s += 2
+        elif abs(bpm - bpm_l * 2) / max(bpm, 1) < 0.03:
+            s += 1
+        return s
+
+    best = max(candidates, key=_score)
+    return best
+
+
+def step2_global(input_path, melody_path=None):
     print("\n[2/11] Extracting global properties ...")
     extractor = es.MusicExtractor(
         lowlevelStats=['mean', 'stdev'],
@@ -172,11 +332,87 @@ def step2_global(input_path):
     y, sr_lib = librosa.load(input_path, sr=None, mono=True)
     duration_s = len(y) / sr_lib
 
+    # --- Key: multi-algorithm voting ---
+    # Source 1: Essentia key profiles on full mix
+    key_votes = []
+    print("  Key detection (full mix):")
+    for prefix, label in [('tonal.key_edma', 'EDMA'),
+                           ('tonal.key_krumhansl', 'Krumhansl'),
+                           ('tonal.key_temperley', 'Temperley')]:
+        try:
+            k = str(features[f'{prefix}.key'])
+            s = str(features[f'{prefix}.scale'])
+            st = float(features[f'{prefix}.strength'])
+            key_votes.append((k, s, round(st, 3)))
+            print(f"    {label:<12} {k} {s} (str={round(st, 3)})")
+        except Exception:
+            pass
+
+    # Source 2: Essentia chord-based key estimate
+    try:
+        ck = str(features['tonal.chords_key'])
+        cs = str(features['tonal.chords_scale'])
+        if ck != '?' and cs != '?':
+            key_votes.append((ck, cs, 0.5))
+            print(f"    {'Chords-key':<12} {ck} {cs}")
+    except Exception:
+        pass
+
+    # Source 3: Librosa chroma on harmonic-separated signal (global + segments)
+    lib_global = _librosa_key(y, sr_lib)
+    key_votes.append(lib_global)
+    print(f"    {'Librosa':<12} {lib_global[0]} {lib_global[1]} (str={lib_global[2]})")
+
+    seg_len = len(y) // 4
+    for i in range(4):
+        seg = y[i * seg_len:(i + 1) * seg_len]
+        if len(seg) > sr_lib:
+            sk = _librosa_key(seg, sr_lib)
+            key_votes.append(sk)
+            print(f"    {'  seg'+str(i+1):<12} {sk[0]} {sk[1]} (str={sk[2]})")
+
+    # Source 4: Key detection on isolated melodic stem (no drums/bass)
+    if melody_path and os.path.exists(melody_path):
+        print("  Key detection (melody stem):")
+        try:
+            mel_ext = es.MusicExtractor(tonalStats=['mean'])
+            mel_f, _ = mel_ext(melody_path)
+            for prefix, label in [('tonal.key_edma', 'mel-EDMA'),
+                                   ('tonal.key_krumhansl', 'mel-Krum'),
+                                   ('tonal.key_temperley', 'mel-Temp')]:
+                try:
+                    k = str(mel_f[f'{prefix}.key'])
+                    s = str(mel_f[f'{prefix}.scale'])
+                    st = float(mel_f[f'{prefix}.strength'])
+                    key_votes.append((k, s, round(st, 3)))
+                    print(f"    {label:<12} {k} {s} (str={round(st, 3)})")
+                except Exception:
+                    pass
+            # Librosa on melody stem
+            y_mel, sr_mel = librosa.load(melody_path, sr=None, mono=True)
+            mel_lib = _librosa_key(y_mel, sr_mel)
+            key_votes.append(mel_lib)
+            print(f"    {'mel-Librosa':<12} {mel_lib[0]} {mel_lib[1]} (str={mel_lib[2]})")
+        except Exception as e:
+            print(f"    (melody stem key detection failed: {e})")
+
+    key, scale, key_strength, camelot = _vote_key(key_votes)
+    print(f"  Key vote: {key} {scale} (str={key_strength}, camelot={camelot})"
+          f"  [{len(key_votes)} voters]")
+
+    # --- BPM: octave-corrected with librosa cross-validation ---
+    bpm_raw = g('rhythm.bpm')
+    bpm = _correct_bpm(bpm_raw, y, sr_lib)
+    print(f"  BPM: {bpm}  (essentia raw: {round(bpm_raw)}, corrected)")
+
     props = {
-        'bpm':                round(g('rhythm.bpm')),
-        'key':                gs('tonal.key_edma.key'),
-        'scale':              gs('tonal.key_edma.scale'),
-        'key_strength':       round(g('tonal.key_edma.strength'), 3),
+        'bpm':                bpm,
+        'key':                key,
+        'scale':              scale,
+        'camelot':            camelot,
+        'key_strength':       key_strength,
+        'key_votes':          [{'key': k, 'scale': s, 'strength': st}
+                               for k, s, st in key_votes],
         'tuning_freq':        round(g('tonal.tuning_frequency'), 2),
         'loudness_lufs':      round(g('lowlevel.loudness_ebu128.integrated'), 1),
         'loudness_range':     round(g('lowlevel.loudness_ebu128.loudness_range'), 1),
@@ -192,7 +428,7 @@ def step2_global(input_path):
         'duration_s':         round(duration_s, 1),
     }
     for k, v in props.items():
-        if k not in ('mfcc_mean', 'gfcc_mean'):
+        if k not in ('mfcc_mean', 'gfcc_mean', 'key_votes'):
             print(f"  {k}: {v}")
     return props
 
@@ -564,10 +800,10 @@ def step5_drums(drums_path, bpm, sr=44100):
     onsets = es.Onsets()(np.array([feat]), [1])
 
     bar_s = 60.0 / bpm * 4
-
-    # Swing: measure deviation from strict grid before quantizing
     beat_s = 60.0 / bpm
     sixteenth_s = beat_s / 4
+
+    # Swing: measure deviation from strict grid before quantizing
     deviations = []
     for t in onsets:
         nearest_grid = round(t / sixteenth_s) * sixteenth_s
@@ -578,10 +814,8 @@ def step5_drums(drums_path, bpm, sr=44100):
     else:
         swing_pct = 0.0
 
-    # Pass 1: compute spectral centroid for every onset
-    onset_data = []   # (beat_position, centroid_hz, time_s)
-    crash_bars = []
-
+    # Compute amplitude + spectral centroid for every onset
+    onset_info = []  # (time_s, amplitude, centroid_hz)
     for t in onsets:
         center = int(t * sr)
         win = 2048
@@ -589,35 +823,53 @@ def step5_drums(drums_path, bpm, sr=44100):
         if len(seg) < win:
             seg = np.pad(seg, (0, win - len(seg)))
 
+        amp = float(np.sqrt(np.mean(seg ** 2)))
         sp    = np.abs(np.fft.rfft(seg))
         freqs = np.fft.rfftfreq(win, 1.0 / sr)
         power = sp ** 2
         total_pow = np.sum(power)
         if total_pow == 0:
             continue
-
         centroid = float(np.sum(freqs * power) / total_pow)
-        beat = quantize(t, bpm)
-        onset_data.append((beat, centroid, t))
+        onset_info.append((t, amp, centroid))
 
-    # Pass 2: adaptive thresholds from this track's centroid distribution
+    # Filter 1: drop bottom 25% by amplitude (ghost notes, bleed)
+    if onset_info:
+        amps = [o[1] for o in onset_info]
+        amp_thresh = np.percentile(amps, 25)
+        onset_info = [o for o in onset_info if o[1] >= amp_thresh]
+
+    # Filter 2: merge onsets within 30ms (double-triggers, reverb tails)
+    MIN_SEP = 0.030
+    merged = []
+    for t, amp, cent in onset_info:
+        if merged and (t - merged[-1][0]) < MIN_SEP:
+            if amp > merged[-1][1]:
+                merged[-1] = (t, amp, cent)
+            continue
+        merged.append((t, amp, cent))
+    onset_info = merged
+    print(f"  Onsets: {len(onsets)} raw → {len(onset_info)} after filtering")
+
+    # Classify by fixed frequency boundaries (not percentiles)
+    KICK_CEILING = 350    # Hz — kicks are low-frequency
+    HH_FLOOR     = 5000   # Hz — hi-hats are high-frequency
+    # Between 350-5000 Hz → snare/clap
+
     grid_votes = {}
-    if onset_data:
-        all_c = np.array([d[1] for d in onset_data])
-        kick_cut = np.percentile(all_c, 30)
-        hh_cut   = np.percentile(all_c, 70)
+    crash_bars = []
+    for t, amp, centroid in onset_info:
+        beat = quantize(t, bpm)
+        if centroid <= KICK_CEILING:
+            label = 'kick'
+        elif centroid >= HH_FLOOR:
+            label = 'hh'
+        else:
+            label = 'snare'
+        grid_votes.setdefault(beat, []).append(label)
 
-        for beat, centroid, t in onset_data:
-            if centroid <= kick_cut:
-                label = 'kick'
-            elif centroid >= hh_cut:
-                label = 'hh'
-            else:
-                label = 'snare'
-            grid_votes.setdefault(beat, []).append(label)
-
-            if centroid >= hh_cut and abs(beat) < 0.1:
-                crash_bars.append(int(t / bar_s))
+        if centroid >= HH_FLOOR and abs(beat) < 0.1:
+            crash_bars.append(int(t / bar_s))
 
     # Majority vote per grid slot → one label per position
     kicks_b, snares_b, hihats_b = [], [], []
@@ -633,6 +885,14 @@ def step5_drums(drums_path, bpm, sr=44100):
     _, kick_pat  = find_pattern(kicks_b)
     _, snare_pat = find_pattern(snares_b)
     _, hh_pat    = find_pattern(hihats_b)
+
+    # Sanity warnings
+    if len(kick_pat) > 6:
+        print(f"  Warning: {len(kick_pat)} kick hits/bar — may include bleed")
+    if len(snare_pat) > 6:
+        print(f"  Warning: {len(snare_pat)} clap hits/bar — may include bleed")
+    if len(hh_pat) > 12:
+        print(f"  Warning: {len(hh_pat)} hh hits/bar — may include bleed")
 
     has_triplets = any(
         abs(b % 1.0 - r) < 0.08
@@ -1373,8 +1633,9 @@ def print_report(profile):
     print(f"  Source:       {profile['source_file']}")
     print(f"  Genre:        {profile.get('genre', '?')}  |  Mood: {profile.get('mood', '?')}  |  Energy: {profile.get('energy_level', '?')}")
     print(f"  BPM:          {profile['bpm']}")
-    print(f"  Key:          {profile['key']} {profile['scale']}")
-    print(f"  Duration:     {profile['duration_s']:.1f}s ({profile['n_bars']} bars)")
+    print(f"  Key:          {profile['key']} {profile['scale']}  ({profile.get('camelot', '?')} Camelot)")
+    dur = profile['duration_s']
+    print(f"  Duration:     {int(dur)//60}:{int(dur)%60:02d} ({dur:.1f}s, {profile['n_bars']} bars)")
     print(f"  Loudness:     {profile['loudness_lufs']} LUFS")
     print(f"  Centroid:     {profile['spectral_centroid']} Hz")
     print(f"  Danceability: {profile.get('danceability', '?')}")
@@ -1511,7 +1772,7 @@ def main(input_path, output_dir=None):
     stems = step1_separate(input_path, output_dir)
 
     # 2 — global
-    props = step2_global(input_path)
+    props = step2_global(input_path, melody_path=stems.get('other'))
     bpm = props['bpm']
 
     # 3 — chords
@@ -1559,6 +1820,8 @@ def main(input_path, output_dir=None):
         'bpm':              bpm,
         'key':              props['key'],
         'scale':            props['scale'],
+        'camelot':          props.get('camelot', '?'),
+        'key_profiles':     props.get('key_profiles', {}),
         'time_signature':   '4/4',
         'duration_s':       props['duration_s'],
         'n_bars':           n_bars,
