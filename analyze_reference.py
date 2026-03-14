@@ -201,7 +201,7 @@ def step2_global(input_path):
 # STEP 3 — CHORD PROGRESSION  (essentia on bass+other stems)
 # ============================================================================
 
-def step3_chords(bass_path, other_path, bpm, sr=44100):
+def step3_chords(bass_path, other_path, bpm, global_key=None, global_scale=None, sr=44100):
     print("\n[3/11] Detecting chord progression ...")
     bass  = es.MonoLoader(filename=bass_path,  sampleRate=sr)()
     other = es.MonoLoader(filename=other_path, sampleRate=sr)()
@@ -243,8 +243,16 @@ def step3_chords(bass_path, other_path, bpm, sr=44100):
     chord_cyc = bar_chords[:cycle]
     voicings  = _build_voicings(chord_cyc)
 
+    # --- harmonic detail ---
+    harmonic_detail = _analyze_harmony(bar_chords, chords, cycle, bass, bpm,
+                                       sr, frame_s, global_key, global_scale, mix)
+
     print(f"  Cycle ({cycle} bars): {chord_cyc}")
-    return chord_cyc, voicings, bar_chords
+    hd = harmonic_detail
+    print(f"  Harmonic rhythm: {hd['harmonic_rhythm']} ({hd['changes_per_cycle']} changes/cycle)")
+    if hd['modulations']:
+        print(f"  Modulations: {hd['modulations']}")
+    return chord_cyc, voicings, bar_chords, harmonic_detail
 
 
 def _normalize_chord(name):
@@ -289,6 +297,153 @@ def _build_voicings(chord_names, base_oct=3):
     return voicings
 
 
+_PC_NAMES = {'C': 0, 'C#': 1, 'D-': 1, 'D': 2, 'D#': 3, 'E-': 3,
+             'E': 4, 'F': 5, 'F#': 6, 'G-': 6, 'G': 7, 'G#': 8,
+             'A-': 8, 'A': 9, 'A#': 10, 'B-': 10, 'B': 11}
+
+
+def _chord_root_pc(chord_name):
+    """Get pitch class (0-11) of a chord's root."""
+    if chord_name == 'N':
+        return None
+    try:
+        from music21 import harmony
+        cs = harmony.ChordSymbol(_normalize_chord(chord_name))
+        return cs.root().pitchClass
+    except Exception:
+        # fallback: parse first 1-2 chars
+        for name in sorted(_PC_NAMES, key=len, reverse=True):
+            if chord_name.startswith(name):
+                return _PC_NAMES[name]
+        return None
+
+
+def _chord_pitch_classes(chord_name):
+    """Get all pitch classes of a chord (root, 3rd, 5th, etc.)."""
+    if chord_name == 'N':
+        return []
+    try:
+        from music21 import harmony
+        cs = harmony.ChordSymbol(_normalize_chord(chord_name))
+        return [p.pitchClass for p in cs.pitches]
+    except Exception:
+        return []
+
+
+def _analyze_harmony(bar_chords, raw_chords, cycle, bass_audio, bpm,
+                     sr, frame_s, global_key, global_scale, mix_audio):
+    """Compute harmonic rhythm, inversions, and modulations."""
+    bar_s = 60.0 / bpm * 4
+
+    # --- harmonic rhythm ---
+    changes = sum(1 for i in range(1, len(bar_chords))
+                  if bar_chords[i] != bar_chords[i - 1])
+    cycle_changes = sum(1 for i in range(1, min(cycle, len(bar_chords)))
+                        if bar_chords[i] != bar_chords[i - 1])
+
+    # median distance between changes
+    change_dists = []
+    last = 0
+    for i in range(1, len(bar_chords)):
+        if bar_chords[i] != bar_chords[i - 1]:
+            change_dists.append(i - last)
+            last = i
+    if change_dists:
+        med = int(round(float(np.median(change_dists))))
+        harm_rhythm = f"every {med} bar{'s' if med != 1 else ''}"
+    else:
+        harm_rhythm = "static"
+
+    # mid-bar changes: check at half-bar resolution
+    half_bar_s = bar_s / 2
+    has_mid_bar = False
+    for bar in range(min(len(bar_chords), len(raw_chords))):
+        si = int(bar * bar_s / frame_s)
+        mi = int((bar + 0.5) * bar_s / frame_s)
+        ei = min(int((bar + 1) * bar_s / frame_s), len(raw_chords))
+        if mi >= len(raw_chords) or si >= len(raw_chords):
+            break
+        first_half = [c for c in raw_chords[si:mi] if c != 'N']
+        second_half = [c for c in raw_chords[mi:ei] if c != 'N']
+        if first_half and second_half:
+            h1 = Counter(first_half).most_common(1)[0][0]
+            h2 = Counter(second_half).most_common(1)[0][0]
+            if h1 != h2:
+                has_mid_bar = True
+                break
+
+    # --- chord inversions (bass note vs chord root) ---
+    inversions = []
+    for bar in range(min(len(bar_chords), int(len(bass_audio) / sr / bar_s))):
+        chord = bar_chords[bar]
+        root_pc = _chord_root_pc(chord)
+        pcs = _chord_pitch_classes(chord)
+        if root_pc is None or not pcs:
+            inversions.append('N')
+            continue
+
+        # detect bass note via yin on bass stem segment
+        s_samp = int(bar * bar_s * sr)
+        e_samp = min(int((bar + 1) * bar_s * sr), len(bass_audio))
+        seg = bass_audio[s_samp:e_samp]
+        if len(seg) < 1024:
+            inversions.append('root')
+            continue
+
+        try:
+            f0 = librosa.yin(seg.astype(np.float32), fmin=30, fmax=500,
+                             sr=sr, frame_length=4096)
+            voiced = f0[(f0 > 30) & (f0 < 500)]
+            if len(voiced) == 0:
+                inversions.append('root')
+                continue
+            bass_hz = float(np.median(voiced))
+            bass_midi = int(round(12 * np.log2(bass_hz / 440) + 69))
+            bass_pc = bass_midi % 12
+        except Exception:
+            inversions.append('root')
+            continue
+
+        if bass_pc == root_pc:
+            inversions.append('root')
+        elif len(pcs) >= 2 and bass_pc == pcs[1]:
+            inversions.append('1st_inv')
+        elif len(pcs) >= 3 and bass_pc == pcs[2]:
+            inversions.append('2nd_inv')
+        else:
+            inversions.append('root')
+
+    inv_cycle = inversions[:cycle] if cycle <= len(inversions) else inversions
+
+    # --- modulations (per 8-bar key detection) ---
+    modulations = []
+    seg_bars = 8
+    key_ext = es.KeyExtractor()
+    for seg_start in range(0, int(len(mix_audio) / sr / bar_s), seg_bars):
+        s_samp = int(seg_start * bar_s * sr)
+        e_samp = min(int((seg_start + seg_bars) * bar_s * sr), len(mix_audio))
+        seg = mix_audio[s_samp:e_samp]
+        if len(seg) < sr:
+            continue
+        try:
+            seg_key, seg_scale, seg_str = key_ext(seg.astype(np.float32))
+            if global_key and (seg_key != global_key or seg_scale != global_scale):
+                modulations.append({
+                    'bar': seg_start, 'key': seg_key, 'scale': seg_scale,
+                    'strength': round(float(seg_str), 3)
+                })
+        except Exception:
+            pass
+
+    return {
+        'harmonic_rhythm': harm_rhythm,
+        'changes_per_cycle': cycle_changes,
+        'has_mid_bar_changes': has_mid_bar,
+        'inversions': inv_cycle,
+        'modulations': modulations,
+    }
+
+
 # ============================================================================
 # STEP 4 — BASS PATTERN  (basic-pitch on bass stem)
 # ============================================================================
@@ -310,7 +465,7 @@ def step4_bass(bass_path, bpm, chord_cycle):
         from basic_pitch.inference import predict
     except ImportError:
         print("  (skipped — basic-pitch not installed)")
-        return [], []
+        return [], [], {}
 
     _, midi_data, _ = _basic_pitch_predict(bass_path)
 
@@ -318,14 +473,15 @@ def step4_bass(bass_path, bpm, chord_cycle):
              for inst in midi_data.instruments for n in inst.notes]
     if not notes:
         print("  No bass notes detected")
-        return [], []
+        return [], [], {}
 
     beat_s = 60.0 / bpm
     quantized = []
     for start, dur, pitch, vel in notes:
         b = quantize(start, bpm)
         d = max(0.25, round(dur / beat_s * 4) / 4)
-        quantized.append({'beat': b, 'dur': round(d, 2), 'pitch': pitch})
+        quantized.append({'beat': b, 'dur': round(d, 2), 'pitch': pitch,
+                          'start_s': start})
 
     # detect rhythm pattern (pitch-free)
     pat_bars, _ = find_pattern([q['beat'] for q in quantized], candidates=(1, 2, 4))
@@ -349,9 +505,42 @@ def step4_bass(bass_path, bpm, chord_cycle):
         else:
             bass_roots.append(midi_to_name(36))
 
+    # --- bass detail: articulation + slides ---
+    durs = [q['dur'] for q in quantized]
+    staccato = sum(1 for d in durs if d < 0.5)
+    sustained = sum(1 for d in durs if d > 2.0)
+    normal = len(durs) - staccato - sustained
+
+    if sustained >= staccato and sustained >= normal:
+        artic = 'sustained'
+    elif staccato >= normal:
+        artic = 'staccato'
+    else:
+        artic = 'normal'
+
+    avg_dur = round(float(np.mean(durs)), 2) if durs else 0.0
+
+    # slides: consecutive notes with small pitch interval and tight timing
+    slide_count = 0
+    sorted_notes = sorted(quantized, key=lambda x: x['start_s'])
+    for i in range(1, len(sorted_notes)):
+        prev, curr = sorted_notes[i - 1], sorted_notes[i]
+        pitch_diff = abs(curr['pitch'] - prev['pitch'])
+        time_gap = curr['start_s'] - (prev['start_s'] + prev['dur'] * beat_s)
+        if pitch_diff <= 2 and time_gap < 0.25 * beat_s:
+            slide_count += 1
+
+    bass_detail = {
+        'articulation': artic,
+        'avg_duration_beats': avg_dur,
+        'slide_count': slide_count,
+        'has_slides': slide_count > 0,
+    }
+
     print(f"  Pattern: {len(pattern)} events / {pat_bars}-bar cycle")
     print(f"  Bass roots: {bass_roots}")
-    return pattern, bass_roots
+    print(f"  Articulation: {artic}  avg_dur={avg_dur} beats  slides={slide_count}")
+    return pattern, bass_roots, bass_detail
 
 
 # ============================================================================
@@ -540,7 +729,7 @@ def step6_melody(other_path, bpm):
 # STEP 7 — SONG STRUCTURE  (librosa energy/spectral change-points)
 # ============================================================================
 
-def step7_structure(input_path, bpm):
+def step7_structure(input_path, bpm, stems=None):
     print("\n[7/11] Detecting song structure + energy curve ...")
     y, sr_lib = librosa.load(input_path, sr=22050, mono=True)
 
@@ -568,6 +757,19 @@ def step7_structure(input_path, bpm):
     if boundaries[-1] != n_bars:
         boundaries.append(n_bars)
 
+    # --- per-stem bar-level RMS for layer density ---
+    stem_rms = {}
+    if stems:
+        for stem_name in ('drums', 'bass', 'other', 'vocals'):
+            if stem_name not in stems:
+                continue
+            try:
+                y_stem, _ = librosa.load(stems[stem_name], sr=sr_lib, mono=True)
+                sr_rms = librosa.feature.rms(y=y_stem, hop_length=hop_len)[0]
+                stem_rms[stem_name] = sr_rms
+            except Exception:
+                pass
+
     sections = []
     for i in range(len(boundaries) - 1):
         s, e = boundaries[i], boundaries[i + 1]
@@ -578,12 +780,110 @@ def step7_structure(input_path, bpm):
             label = 'hook'
         else:
             label = 'verse'
-        sections.append({'name': label, 'start_bar': int(s), 'end_bar': int(e)})
-        print(f"  {label:<8} bars {s:>3}-{e:>3}  (energy={avg_rms:.2f})")
+
+        sec = {'name': label, 'start_bar': int(s), 'end_bar': int(e),
+               'length_bars': int(e - s)}
+
+        # layer density: which stems are active in this section
+        active = []
+        for stem_name, sr_arr in stem_rms.items():
+            stem_max = float(sr_arr.max()) if sr_arr.max() > 0 else 1e-9
+            sec_slice = sr_arr[min(s, len(sr_arr)):min(e, len(sr_arr))]
+            if len(sec_slice) > 0 and float(np.mean(sec_slice)) > 0.1 * stem_max:
+                active.append(stem_name)
+        sec['active_layers'] = active
+
+        sections.append(sec)
+        layers_str = ','.join(active) if active else 'none'
+        print(f"  {label:<8} bars {s:>3}-{e:>3} ({e-s:>2} bars)  "
+              f"energy={avg_rms:.2f}  layers=[{layers_str}]")
 
     energy_curve = [round(float(v), 4) for v in rms_n]
     print(f"  Energy curve: {len(energy_curve)} bars")
-    return sections, energy_curve
+
+    # --- transitions between sections ---
+    transitions = []
+    for i in range(1, len(sections)):
+        bnd = sections[i]['start_bar']
+        pre_s = max(0, bnd - 2)
+        post_e = min(n_bars, bnd + 2)
+
+        pre_rms = rms_n[pre_s:bnd]
+        post_rms = rms_n[bnd:post_e]
+        pre_cent = cent_n[pre_s:bnd]
+        post_cent = cent_n[bnd:post_e]
+
+        if len(pre_rms) == 0 or len(post_rms) == 0:
+            transitions.append({'bar': int(bnd), 'type': 'cut'})
+            continue
+
+        rms_before = float(np.mean(pre_rms))
+        rms_after = float(np.mean(post_rms))
+        cent_before = float(np.mean(pre_cent))
+        cent_after = float(np.mean(post_cent))
+
+        # onset density in last bar before boundary
+        onset_slice = onset_e[max(0, bnd - 1):bnd]
+        sec_onset = onset_e[sections[i - 1]['start_bar']:bnd]
+        fill = (len(onset_slice) > 0 and len(sec_onset) > 0 and
+                float(np.mean(onset_slice)) > 2 * float(np.mean(sec_onset)))
+
+        if fill:
+            t_type = 'fill'
+        elif rms_before > 0 and rms_after / max(rms_before, 1e-9) < 0.5:
+            t_type = 'drop'
+        elif len(pre_rms) >= 2 and pre_rms[-1] > pre_rms[0] * 1.3:
+            t_type = 'riser'
+        elif cent_before > 0 and cent_after / max(cent_before, 1e-9) > 1.3:
+            t_type = 'sweep_up'
+        elif cent_before > 0 and cent_after / max(cent_before, 1e-9) < 0.7:
+            t_type = 'sweep_down'
+        else:
+            t_type = 'cut'
+
+        transitions.append({'bar': int(bnd), 'type': t_type})
+
+    # --- intro / outro technique ---
+    intro_tech = 'cold_start'
+    if sections:
+        sec0 = sections[0]
+        s0, e0 = sec0['start_bar'], sec0['end_bar']
+        sec0_rms = rms_n[s0:e0]
+        sec0_cent = cent_n[s0:e0]
+        if len(sec0_rms) >= 3:
+            if sec0_cent[-1] > sec0_cent[0] * 1.5:
+                intro_tech = 'filter_sweep_in'
+            elif sec0_rms[-1] > sec0_rms[0] * 2:
+                intro_tech = 'fade_in'
+            elif len(sec0.get('active_layers', [])) <= 1:
+                intro_tech = 'stripped'
+            elif sec0_rms[0] > 0.5:
+                intro_tech = 'cold_start'
+
+    outro_tech = 'hard_stop'
+    if sections:
+        secN = sections[-1]
+        sN, eN = secN['start_bar'], secN['end_bar']
+        secN_rms = rms_n[sN:eN]
+        secN_cent = cent_n[sN:eN]
+        if len(secN_rms) >= 3:
+            if secN_rms[-1] < secN_rms[0] * 0.5:
+                outro_tech = 'fade_out'
+            elif secN_cent[-1] < secN_cent[0] * 0.6:
+                outro_tech = 'filter_sweep_out'
+            elif len(secN.get('active_layers', [])) <= 1:
+                outro_tech = 'stripped'
+
+    arrangement = {
+        'transitions': transitions,
+        'intro_technique': intro_tech,
+        'outro_technique': outro_tech,
+    }
+    print(f"  Intro: {intro_tech}  Outro: {outro_tech}")
+    if transitions:
+        print(f"  Transitions: {[(t['bar'], t['type']) for t in transitions]}")
+
+    return sections, energy_curve, arrangement
 
 
 # ============================================================================
@@ -1082,9 +1382,26 @@ def print_report(profile):
     print(f"  Swing:        {profile.get('swing_pct', 0)}%")
 
     print(f"\n  Chords:    {profile['chords']}")
-    for i, v in enumerate(profile.get('chord_voicings', [])):
-        name = profile['chords'][i] if i < len(profile['chords']) else '?'
-        print(f"    Bar {i}: {name:<6} {v}")
+    hd = profile.get('harmonic_detail', {})
+    if hd:
+        inv = hd.get('inversions', [])
+        for i, v in enumerate(profile.get('chord_voicings', [])):
+            name = profile['chords'][i] if i < len(profile['chords']) else '?'
+            inv_label = inv[i] if i < len(inv) else ''
+            print(f"    Bar {i}: {name:<6} {v}  [{inv_label}]")
+        print(f"  Harmonic rhythm: {hd.get('harmonic_rhythm', '?')} "
+              f"({hd.get('changes_per_cycle', 0)} changes/cycle)")
+        if hd.get('has_mid_bar_changes'):
+            print(f"  Mid-bar chord changes detected")
+        mods = hd.get('modulations', [])
+        if mods:
+            print(f"  Modulations:")
+            for m in mods:
+                print(f"    bar {m['bar']}: {m['key']} {m['scale']} (str={m['strength']})")
+    else:
+        for i, v in enumerate(profile.get('chord_voicings', [])):
+            name = profile['chords'][i] if i < len(profile['chords']) else '?'
+            print(f"    Bar {i}: {name:<6} {v}")
 
     print(f"\n  Bass roots: {profile.get('bass_roots', [])}")
     bp = profile.get('bass_pattern', [])
@@ -1092,6 +1409,11 @@ def print_report(profile):
         print(f"  Bass pattern ({len(bp)} events):")
         for e in bp:
             print(f"    beat {e['beat']:>5.2f}  dur {e['dur']}")
+    bd = profile.get('bass_detail', {})
+    if bd:
+        print(f"  Bass articulation: {bd.get('articulation', '?')}  "
+              f"avg_dur={bd.get('avg_duration_beats', 0)} beats  "
+              f"slides={bd.get('slide_count', 0)}")
 
     dp = profile.get('drum_pattern', {})
     print(f"\n  Drums:")
@@ -1114,7 +1436,21 @@ def print_report(profile):
     if secs:
         print(f"\n  Structure:")
         for s in secs:
-            print(f"    {s['name']:<8} bars {s['start_bar']:>3}-{s['end_bar']:>3}")
+            layers = s.get('active_layers', [])
+            layers_str = f"  [{','.join(layers)}]" if layers else ''
+            print(f"    {s['name']:<8} bars {s['start_bar']:>3}-{s['end_bar']:>3} "
+                  f"({s.get('length_bars', '?')} bars){layers_str}")
+
+    arr = profile.get('arrangement', {})
+    if arr:
+        print(f"\n  Arrangement:")
+        print(f"    Intro: {arr.get('intro_technique', '?')}  "
+              f"Outro: {arr.get('outro_technique', '?')}")
+        trans = arr.get('transitions', [])
+        if trans:
+            print(f"    Transitions:")
+            for t in trans:
+                print(f"      bar {t['bar']:>3}: {t['type']}")
 
     mp = profile.get('mix_profile', {})
     if mp:
@@ -1179,15 +1515,17 @@ def main(input_path, output_dir=None):
     bpm = props['bpm']
 
     # 3 — chords
-    chord_cycle, voicings, bar_chords = [], [], []
+    chord_cycle, voicings, bar_chords, harmonic_detail = [], [], [], {}
     if 'bass' in stems and 'other' in stems:
-        chord_cycle, voicings, bar_chords = step3_chords(
-            stems['bass'], stems['other'], bpm)
+        chord_cycle, voicings, bar_chords, harmonic_detail = step3_chords(
+            stems['bass'], stems['other'], bpm,
+            global_key=props['key'], global_scale=props['scale'])
 
     # 4 — bass
-    bass_pattern, bass_roots = [], []
+    bass_pattern, bass_roots, bass_detail = [], [], {}
     if 'bass' in stems:
-        bass_pattern, bass_roots = step4_bass(stems['bass'], bpm, chord_cycle)
+        bass_pattern, bass_roots, bass_detail = step4_bass(
+            stems['bass'], bpm, chord_cycle)
 
     # 5 — drums + swing
     drum_pattern = {}
@@ -1200,8 +1538,9 @@ def main(input_path, output_dir=None):
     if 'other' in stems:
         melody_layers = step6_melody(stems['other'], bpm)
 
-    # 7 — structure + energy curve
-    sections, energy_curve = step7_structure(input_path, bpm)
+    # 7 — structure + energy curve + arrangement
+    sections, energy_curve, arrangement = step7_structure(
+        input_path, bpm, stems=stems)
 
     # 8 — mix profile
     mix_profile = step8_mix_profile(input_path, stems, bpm, sections)
@@ -1231,11 +1570,14 @@ def main(input_path, output_dir=None):
         'swing_pct':        swing_pct,
         'chords':           chord_cycle,
         'chord_voicings':   voicings,
+        'harmonic_detail':  harmonic_detail,
         'bass_roots':       bass_roots,
         'bass_pattern':     bass_pattern,
+        'bass_detail':      bass_detail,
         'drum_pattern':     drum_pattern,
         'melody_layers':    melody_layers,
         'sections':         sections,
+        'arrangement':      arrangement,
         'energy_curve':     energy_curve,
         'mix_profile':      mix_profile,
         'genre':            genre,
