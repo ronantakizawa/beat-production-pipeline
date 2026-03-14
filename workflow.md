@@ -60,7 +60,15 @@ If you use both, state which one wins on conflicts. Default: analysis data overr
 - Use the arrangement structure from the tutorial
 
 ### General compose rules:
-- Melody source: use chord progressions from `/Users/ronantakizawa/Documents/instruments/chordprogressions` — derive melodies from chord top notes, passing tones from the key's scale
+- **Chord voicing reference (ALWAYS use):** Before writing any chord voicings, check `/Users/ronantakizawa/Documents/instruments/chordprogressions/` for the target key. This directory contains:
+  - `GitHub Free Progressions/{KEY}/{KEY} Minor/` — minor key triads with proper voice leading
+  - `GitHub Free Progressions/{KEY}/{KEY} Ninths/` — extended 5-note jazz voicings
+  - `GitHub Free Progressions/{KEY}/{KEY} Sevenths/` — 7th chord voicings
+  - `More Genres/Trap Dark.mid`, `Trap Hard.mid`, `Trap Melodic.mid` — genre-specific trap voicings
+  - `More Genres/Reggae *.mid` — reggae chord patterns
+  - `EDM Progressions/` — EDM chord progressions
+  - Analyze the MIDI files with mido to extract note names, octave ranges, and voicing density. Match your voicings to the reference register (typically octave 4 for triads) and include all chord tones (don't drop the 3rd — it defines major/minor).
+- Melody source: derive melodies from chord top notes + passing tones from the key's scale, using the chordprogressions reference voicings as the harmonic foundation
 - Keep melodies quiet and lowkey — low velocity (38-58), sparse notes, lots of rests
 - Melody should sit behind the drums and bass, not compete with them
 - Use music21 for MIDI generation with separate parts per instrument
