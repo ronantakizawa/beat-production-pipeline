@@ -1,0 +1,15 @@
+essentia
+librosa
+soundfile
+numpy
+scipy
+music21
+mido
+demucs
+basic-pitch
+onnxruntime
+pydub
+pedalboard
+dawdreamer
+pyroomacoustics
+pyloudnorm

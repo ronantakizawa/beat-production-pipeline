@@ -1,0 +1,36 @@
+*.wav
+*.mp3
+*.zip
+*_FIXED.mid
+__pycache__/
+.DS_Store
+ref_stems/
+instruments_index.json
+usage_log.json
+
+# Sample kit directories (large binary files)
+92elm - synplant sounds/
+Best Free Synths Samples/
+Breakbeats - Chopped to Tempo/
+Care Package/
+FL_Studio/
+Free 808 Samples/
+Free Melody Samples/
+LSTBT_FSMD*/
+Loop/
+Metro Boomin*/
+NIKOS*/
+Obie*/
+Piano Sample Pack/
+Presets/
+REGGAETON*/
+Vocalpack*/
+VIRION*/
+Wave Point*/
+flute_sound_kit/
+lex_luger_drum_kit/
+reggaeton*/
+synthwaveSamples/
+rap2/
+rap3/
+rap4/
