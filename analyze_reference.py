@@ -8,14 +8,16 @@ Usage:
     python analyze_reference.py <input.mp3|wav> [output_dir]
 
 Pipeline:
-    1. Demucs stem separation (drums, bass, other, vocals)
-    2. Global properties (BPM, key, loudness, spectral via essentia)
-    3. Chord progression (essentia HPCP + ChordsDetection on bass+other)
-    4. Bass pattern (basic-pitch on bass stem)
-    5. Drum pattern (essentia onset + spectral band classification)
-    6. Melody extraction (basic-pitch on other stem, split by register)
-    7. Song structure (librosa energy/spectral change-point detection)
-    8. JSON output + printed report
+    1.  Demucs stem separation (drums, bass, other, vocals)
+    2.  Global properties (BPM, key, loudness, spectral, danceability)
+    3.  Chord progression (essentia HPCP + ChordsDetection on bass+other)
+    4.  Bass pattern (basic-pitch on bass stem)
+    5.  Drum pattern + swing (essentia onset + spectral classification)
+    6.  Melody extraction (basic-pitch on other stem, split by register)
+    7.  Song structure + energy curve (librosa change-points + per-bar RMS)
+    8.  Mix profile (stereo width, EQ balance, reverb, vocal presence)
+    9.  Genre / vibe (heuristic from features)
+    10. JSON output + printed report
 
 Requirements:
     pip install essentia librosa soundfile numpy demucs basic-pitch music21
@@ -114,7 +116,7 @@ def find_pattern(onsets_beats, bar_beats=4.0, candidates=(1, 2, 4)):
 # ============================================================================
 
 def step1_separate(input_path, output_dir):
-    print("\n[1/8] Separating stems with Demucs ...")
+    print("\n[1/10] Separating stems with Demucs ...")
     stems_dir = os.path.join(output_dir, 'ref_stems')
 
     basename = os.path.splitext(os.path.basename(input_path))[0]
@@ -145,7 +147,7 @@ def step1_separate(input_path, output_dir):
 # ============================================================================
 
 def step2_global(input_path):
-    print("\n[2/8] Extracting global properties ...")
+    print("\n[2/10] Extracting global properties ...")
     extractor = es.MusicExtractor(
         lowlevelStats=['mean', 'stdev'],
         rhythmStats=['mean', 'stdev'],
@@ -181,6 +183,9 @@ def step2_global(input_path):
         'spectral_centroid':  round(g('lowlevel.spectral_centroid.mean'), 1),
         'spectral_rolloff':   round(g('lowlevel.spectral_rolloff.mean'), 1),
         'spectral_flux':      round(g('lowlevel.spectral_flux.mean'), 4),
+        'danceability':       round(g('rhythm.danceability'), 3),
+        'onset_rate':         round(g('rhythm.onset_rate'), 2),
+        'beats_loudness':     round(g('rhythm.beats_loudness.mean'), 3),
         'mfcc_mean':          [round(x, 2) for x in g('lowlevel.mfcc.mean', [0]*13)],
         'gfcc_mean':          [round(x, 2) for x in g('lowlevel.gfcc.mean', [0]*13)],
         'duration_s':         round(duration_s, 1),
@@ -196,7 +201,7 @@ def step2_global(input_path):
 # ============================================================================
 
 def step3_chords(bass_path, other_path, bpm, sr=44100):
-    print("\n[3/8] Detecting chord progression ...")
+    print("\n[3/10] Detecting chord progression ...")
     bass  = es.MonoLoader(filename=bass_path,  sampleRate=sr)()
     other = es.MonoLoader(filename=other_path, sampleRate=sr)()
     n = min(len(bass), len(other))
@@ -299,7 +304,7 @@ def _basic_pitch_predict(audio_path):
 
 
 def step4_bass(bass_path, bpm, chord_cycle):
-    print("\n[4/8] Extracting bass pattern ...")
+    print("\n[4/10] Extracting bass pattern ...")
     try:
         from basic_pitch.inference import predict
     except ImportError:
@@ -353,7 +358,7 @@ def step4_bass(bass_path, bpm, chord_cycle):
 # ============================================================================
 
 def step5_drums(drums_path, bpm, sr=44100):
-    print("\n[5/8] Transcribing drum pattern ...")
+    print("\n[5/10] Transcribing drum pattern + swing ...")
     audio = es.MonoLoader(filename=drums_path, sampleRate=sr)()
 
     # onset detection
@@ -369,6 +374,19 @@ def step5_drums(drums_path, bpm, sr=44100):
     onsets = es.Onsets()(np.array([feat]), [1])
 
     bar_s = 60.0 / bpm * 4
+
+    # Swing: measure deviation from strict grid before quantizing
+    beat_s = 60.0 / bpm
+    sixteenth_s = beat_s / 4
+    deviations = []
+    for t in onsets:
+        nearest_grid = round(t / sixteenth_s) * sixteenth_s
+        deviations.append(abs(t - nearest_grid))
+    if deviations:
+        mean_dev = float(np.mean(deviations))
+        swing_pct = round(min(mean_dev / sixteenth_s * 100, 50.0), 1)
+    else:
+        swing_pct = 0.0
 
     # Pass 1: compute spectral centroid for every onset
     onset_data = []   # (beat_position, centroid_hz, time_s)
@@ -450,7 +468,8 @@ def step5_drums(drums_path, bpm, sr=44100):
     print(f"  Clap: {snare_pat}")
     print(f"  HH:   {len(hh_pat)} hits, triplets={has_triplets}")
     print(f"  Crash every {crash_every} bars")
-    return drum
+    print(f"  Swing: {swing_pct}%")
+    return drum, swing_pct
 
 
 # ============================================================================
@@ -465,7 +484,7 @@ REGISTER_BOUNDS = {       # MIDI note boundaries (approx Hz)
 
 
 def step6_melody(other_path, bpm):
-    print("\n[6/8] Extracting melody layers ...")
+    print("\n[6/10] Extracting melody layers ...")
     try:
         from basic_pitch.inference import predict
     except ImportError:
@@ -521,7 +540,7 @@ def step6_melody(other_path, bpm):
 # ============================================================================
 
 def step7_structure(input_path, bpm):
-    print("\n[7/8] Detecting song structure ...")
+    print("\n[7/10] Detecting song structure + energy curve ...")
     y, sr_lib = librosa.load(input_path, sr=22050, mono=True)
 
     bar_s   = 60.0 / bpm * 4
@@ -561,11 +580,166 @@ def step7_structure(input_path, bpm):
         sections.append({'name': label, 'start_bar': int(s), 'end_bar': int(e)})
         print(f"  {label:<8} bars {s:>3}-{e:>3}  (energy={avg_rms:.2f})")
 
-    return sections
+    energy_curve = [round(float(v), 4) for v in rms_n]
+    print(f"  Energy curve: {len(energy_curve)} bars")
+    return sections, energy_curve
 
 
 # ============================================================================
-# STEP 8 — OUTPUT  (JSON + human-readable report)
+# STEP 8 — MIX PROFILE  (stereo width, EQ balance, reverb, vocal presence)
+# ============================================================================
+
+EQ_BANDS = {'sub': (20, 100), 'low': (100, 300), 'mid': (300, 2000),
+            'high': (2000, 8000), 'air': (8000, 20000)}
+
+
+def step8_mix_profile(input_path, stems, bpm, sections):
+    print("\n[8/10] Analyzing mix profile ...")
+    sr_mix = 44100
+
+    # --- stereo width per band ---
+    y_stereo, _ = librosa.load(input_path, sr=sr_mix, mono=False)
+    if y_stereo.ndim == 2 and y_stereo.shape[0] == 2:
+        L, R = y_stereo[0], y_stereo[1]
+        mid_sig = (L + R) / 2
+        side_sig = (L - R) / 2
+
+        n_fft = 4096
+        S_mid  = np.abs(librosa.stft(mid_sig,  n_fft=n_fft))
+        S_side = np.abs(librosa.stft(side_sig, n_fft=n_fft))
+        freqs  = librosa.fft_frequencies(sr=sr_mix, n_fft=n_fft)
+
+        stereo_width = {}
+        for band, (lo, hi) in EQ_BANDS.items():
+            mask = (freqs >= lo) & (freqs < hi)
+            mid_e  = float(np.mean(S_mid[mask] ** 2))  if mask.any() else 1e-10
+            side_e = float(np.mean(S_side[mask] ** 2)) if mask.any() else 0.0
+            stereo_width[band] = round(side_e / max(mid_e + side_e, 1e-10), 3)
+        print(f"  Stereo width: {stereo_width}")
+    else:
+        stereo_width = {b: 0.0 for b in EQ_BANDS}
+        mid_sig = y_stereo if y_stereo.ndim == 1 else y_stereo[0]
+        print("  (mono file — stereo width all 0)")
+
+    # --- EQ balance (dB per band) ---
+    y_mono = mid_sig if y_stereo.ndim == 1 else (y_stereo[0] + y_stereo[1]) / 2
+    S_full = np.abs(librosa.stft(y_mono, n_fft=4096))
+    freqs  = librosa.fft_frequencies(sr=sr_mix, n_fft=4096)
+
+    eq_balance = {}
+    for band, (lo, hi) in EQ_BANDS.items():
+        mask = (freqs >= lo) & (freqs < hi)
+        energy = float(np.mean(S_full[mask] ** 2)) if mask.any() else 1e-10
+        eq_balance[band] = round(10 * np.log10(max(energy, 1e-10)), 1)
+    print(f"  EQ balance: {eq_balance}")
+
+    # --- reverb estimate (decay from "other" stem) ---
+    reverb_decay_s = 0.0
+    if 'other' in stems:
+        y_other, sr_o = librosa.load(stems['other'], sr=22050, mono=True)
+        env = librosa.feature.rms(y=y_other, hop_length=512)[0]
+        if len(env) > 1:
+            autocorr = np.correlate(env - np.mean(env), env - np.mean(env), mode='full')
+            autocorr = autocorr[len(autocorr) // 2:]
+            if autocorr[0] > 0:
+                autocorr = autocorr / autocorr[0]
+                # find where autocorrelation drops below 0.3 (approximate RT60-like)
+                decay_idx = np.argmax(autocorr < 0.3)
+                if decay_idx > 0:
+                    reverb_decay_s = round(decay_idx * 512 / sr_o, 2)
+    print(f"  Reverb decay: {reverb_decay_s}s")
+
+    # --- vocal presence per section ---
+    vocal_presence = []
+    if 'vocals' in stems and sections:
+        y_voc, sr_v = librosa.load(stems['vocals'], sr=22050, mono=True)
+        y_full, _   = librosa.load(input_path, sr=22050, mono=True)
+        bar_s = 60.0 / bpm * 4
+
+        for sec in sections:
+            s_samp = int(sec['start_bar'] * bar_s * sr_v)
+            e_samp = min(int(sec['end_bar'] * bar_s * sr_v), len(y_voc), len(y_full))
+            if s_samp >= e_samp:
+                continue
+            voc_rms  = float(np.sqrt(np.mean(y_voc[s_samp:e_samp] ** 2)))
+            full_rms = float(np.sqrt(np.mean(y_full[s_samp:e_samp] ** 2)))
+            ratio = round(voc_rms / max(full_rms, 1e-10), 3)
+            vocal_presence.append({'name': sec['name'], 'start_bar': sec['start_bar'],
+                                   'ratio': min(ratio, 1.0)})
+        print(f"  Vocal presence: {[(v['name'], v['ratio']) for v in vocal_presence]}")
+    else:
+        print("  Vocal presence: (no vocal stem)")
+
+    return {
+        'stereo_width':    stereo_width,
+        'eq_balance_db':   eq_balance,
+        'reverb_decay_s':  reverb_decay_s,
+        'vocal_presence':  vocal_presence,
+    }
+
+
+# ============================================================================
+# STEP 9 — GENRE / VIBE  (heuristic from features)
+# ============================================================================
+
+def step9_genre(props, drum_pattern, swing_pct):
+    print("\n[9/10] Classifying genre / vibe ...")
+    bpm = props.get('bpm', 0)
+    centroid = props.get('spectral_centroid', 1500)
+    loudness = props.get('loudness_lufs', -14)
+    danceability = props.get('danceability', 0)
+    has_triplets = drum_pattern.get('has_triplets', False)
+    kick = drum_pattern.get('kick', [])
+    clap = drum_pattern.get('clap', [])
+    hh   = drum_pattern.get('hh', [])
+
+    # four-on-the-floor: kicks on 0, 1, 2, 3
+    four_floor = all(b in kick for b in [0.0, 1.0, 2.0, 3.0])
+    # dembow: clap/snare on offbeats
+    dembow = any(abs(b - 0.75) < 0.1 or abs(b - 2.75) < 0.1 for b in clap)
+
+    genre = 'unknown'
+    if 60 <= bpm <= 100 and dembow:
+        genre = 'reggaeton'
+    elif 130 <= bpm <= 170 and has_triplets:
+        genre = 'trap'
+    elif 130 <= bpm <= 170 and not has_triplets:
+        genre = 'drill'
+    elif 85 <= bpm <= 115 and swing_pct > 15:
+        genre = 'boom bap'
+    elif 118 <= bpm <= 135 and four_floor:
+        genre = 'house'
+    elif 85 <= bpm <= 115 and danceability > 0.8:
+        genre = 'r&b'
+    elif 60 <= bpm <= 90:
+        genre = 'lo-fi'
+    elif 90 <= bpm <= 115:
+        genre = 'hip-hop'
+
+    # mood from spectral centroid
+    if centroid < 1000:
+        mood = 'dark'
+    elif centroid > 2500:
+        mood = 'bright'
+    else:
+        mood = 'neutral'
+
+    # energy level from loudness
+    if loudness > -10:
+        energy_level = 'high'
+    elif loudness > -16:
+        energy_level = 'mid'
+    else:
+        energy_level = 'low'
+
+    print(f"  Genre: {genre}")
+    print(f"  Mood: {mood}  (centroid={centroid} Hz)")
+    print(f"  Energy: {energy_level}  (loudness={loudness} LUFS)")
+    return genre, mood, energy_level
+
+
+# ============================================================================
+# STEP 10 — OUTPUT  (JSON + human-readable report)
 # ============================================================================
 
 def print_report(profile):
@@ -573,12 +747,16 @@ def print_report(profile):
     print("\n" + "=" * W)
     print("  REFERENCE ANALYSIS REPORT")
     print("=" * W)
-    print(f"  Source:     {profile['source_file']}")
-    print(f"  BPM:       {profile['bpm']}")
-    print(f"  Key:       {profile['key']} {profile['scale']}")
-    print(f"  Duration:  {profile['duration_s']:.1f}s ({profile['n_bars']} bars)")
-    print(f"  Loudness:  {profile['loudness_lufs']} LUFS")
-    print(f"  Centroid:  {profile['spectral_centroid']} Hz")
+    print(f"  Source:       {profile['source_file']}")
+    print(f"  Genre:        {profile.get('genre', '?')}  |  Mood: {profile.get('mood', '?')}  |  Energy: {profile.get('energy_level', '?')}")
+    print(f"  BPM:          {profile['bpm']}")
+    print(f"  Key:          {profile['key']} {profile['scale']}")
+    print(f"  Duration:     {profile['duration_s']:.1f}s ({profile['n_bars']} bars)")
+    print(f"  Loudness:     {profile['loudness_lufs']} LUFS")
+    print(f"  Centroid:     {profile['spectral_centroid']} Hz")
+    print(f"  Danceability: {profile.get('danceability', '?')}")
+    print(f"  Onset rate:   {profile.get('onset_rate', '?')}")
+    print(f"  Swing:        {profile.get('swing_pct', 0)}%")
 
     print(f"\n  Chords:    {profile['chords']}")
     for i, v in enumerate(profile.get('chord_voicings', [])):
@@ -614,6 +792,21 @@ def print_report(profile):
         print(f"\n  Structure:")
         for s in secs:
             print(f"    {s['name']:<8} bars {s['start_bar']:>3}-{s['end_bar']:>3}")
+
+    mp = profile.get('mix_profile', {})
+    if mp:
+        print(f"\n  Mix profile:")
+        sw = mp.get('stereo_width', {})
+        print(f"    Stereo width:  sub={sw.get('sub',0)} low={sw.get('low',0)} mid={sw.get('mid',0)} high={sw.get('high',0)} air={sw.get('air',0)}")
+        eq = mp.get('eq_balance_db', {})
+        print(f"    EQ balance dB: sub={eq.get('sub',0)} low={eq.get('low',0)} mid={eq.get('mid',0)} high={eq.get('high',0)} air={eq.get('air',0)}")
+        print(f"    Reverb decay:  {mp.get('reverb_decay_s', 0)}s")
+        vp = mp.get('vocal_presence', [])
+        if vp:
+            print(f"    Vocal presence:")
+            for v in vp:
+                print(f"      {v['name']:<8} ratio={v['ratio']}")
+
     print("=" * W)
 
 
@@ -649,20 +842,27 @@ def main(input_path, output_dir=None):
     if 'bass' in stems:
         bass_pattern, bass_roots = step4_bass(stems['bass'], bpm, chord_cycle)
 
-    # 5 — drums
+    # 5 — drums + swing
     drum_pattern = {}
+    swing_pct = 0.0
     if 'drums' in stems:
-        drum_pattern = step5_drums(stems['drums'], bpm)
+        drum_pattern, swing_pct = step5_drums(stems['drums'], bpm)
 
     # 6 — melody
     melody_layers = {}
     if 'other' in stems:
         melody_layers = step6_melody(stems['other'], bpm)
 
-    # 7 — structure
-    sections = step7_structure(input_path, bpm)
+    # 7 — structure + energy curve
+    sections, energy_curve = step7_structure(input_path, bpm)
 
-    # 8 — assemble profile
+    # 8 — mix profile
+    mix_profile = step8_mix_profile(input_path, stems, bpm, sections)
+
+    # 9 — genre / vibe
+    genre, mood, energy_level = step9_genre(props, drum_pattern, swing_pct)
+
+    # 10 — assemble profile
     n_bars = int(props['duration_s'] / (60.0 / bpm * 4))
 
     profile = {
@@ -675,6 +875,10 @@ def main(input_path, output_dir=None):
         'n_bars':           n_bars,
         'loudness_lufs':    props['loudness_lufs'],
         'spectral_centroid': props['spectral_centroid'],
+        'danceability':     props['danceability'],
+        'onset_rate':       props['onset_rate'],
+        'beats_loudness':   props['beats_loudness'],
+        'swing_pct':        swing_pct,
         'chords':           chord_cycle,
         'chord_voicings':   voicings,
         'bass_roots':       bass_roots,
@@ -682,6 +886,11 @@ def main(input_path, output_dir=None):
         'drum_pattern':     drum_pattern,
         'melody_layers':    melody_layers,
         'sections':         sections,
+        'energy_curve':     energy_curve,
+        'mix_profile':      mix_profile,
+        'genre':            genre,
+        'mood':             mood,
+        'energy_level':     energy_level,
     }
 
     json_path = os.path.join(output_dir, 'ref_analysis.json')
