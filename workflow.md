@@ -76,28 +76,68 @@ If you use both, state which one wins on conflicts. Default: analysis data overr
 - Add inline timbre guard comments for critical design decisions (e.g., "MELODY TIMBRE RULE: sine+triangle, not saw")
 - Hook octave pattern: within each 16-bar hook (4 cycles of 4 bars), shift melody octaves as [base, base, +1, +1]
 
-## Step 3: Sound Selection
+## Step 3: Sound Selection (MANDATORY — use instruments_query.py)
+
+**ALWAYS use `SampleSelector` for sample-based instruments. NEVER hardcode sample paths.**
+
+```python
+from instruments_query import SampleSelector
+
+sel = SampleSelector(genre='reggaeton', beat='MyBeat_v1', key='A', seed=42)
+
+# Drums
+KICK   = sel.pick('kick')
+SNARE  = sel.pick('snare')
+HH_CL  = sel.pick('hat_closed')
+HH_OP  = sel.pick('hat_open')
+PERC   = sel.pick('perc')
+
+# Melodic (sample-based — prefer over FAUST for realism)
+MELODY = sel.pick('melody')
+PAD    = sel.pick('pad')
+BASS   = sel.pick('bass')
+
+# Auto pitch/gain info:
+sel.info['melody']['pitch_st']   # semitones to shift to match song key
+sel.info['melody']['gain_db']    # dB correction for target loudness
+sel.info['melody']['root_midi']  # for sample-based pitch shifting
+
+sel.save()  # logs to usage_log.json — next beat auto-avoids these
+```
+
+### Sample vs FAUST decision:
+- **Use samples from catalog** when the index has good matches (melodic_oneshot with is_tonal=True, good key_confidence). The catalog has 5,557 melodic one-shots and 3,059 melodic loops — flutes, synths, bells, guitars, pianos, strings. These sound more realistic than FAUST oscillators.
+- **Use FAUST DSP only** for sub bass (sine osc below 200Hz) or when no catalog sample fits. FAUST is a last resort for melody/pad, not the default.
+- **Use SF2 soundfonts** for instruments not in the WAV catalog (brass, choir, tubular bells). Query presets with `fluidsynth.Synth.sfpreset_name()`.
+
+### Sample-based melody rendering pattern:
+```python
+# Instead of faust_render(dsp, freq, gate, gain):
+from instruments_query import SampleSelector, pitch_offset_st
+sample = load_sample(sel.pick('melody'))
+root_midi = sel.info['melody']['root_midi']
+
+for note_start, note_num, vel, dur in melody_notes:
+    semitones = note_num - root_midi  # pitch shift from sample's root
+    shifted = pitch_shift_sample(sample, semitones)
+    place(buf_L, buf_R, shifted, int(note_start * SR), gain=vel/127.0)
+```
 
 ### If using Path A (reference analysis):
-- Check `instruments.bass.type` — if "808", pick an 808 sample; if "sub_bass", pick a sub; etc.
-- Check `instruments.drums.*_type` — match kick/snare/hh sub-types
-- Check `instruments.melody.*.type` — match pad/main/top timbres (strings/pluck/lead_synth/bell)
-- If `instruments.*.closest_samples` exists, start with those matches from your library
-- Use `instruments.*.features` to verify: brightness, attack, decay, sub energy should be in the same ballpark
-- Use `SampleSelector` from `instruments_query.py` with the detected genre:
-  ```python
-  from instruments_query import SampleSelector
-  sel = SampleSelector(genre=ref['genre'], key=ref['key'])
-  KICK = sel.pick('kick')
-  ```
+- Check `instruments.bass.type` — if "808", pick role='808'; if "sub_bass", use FAUST sub
+- Check `instruments.drums.*_type` — match kick/snare/hh sub-types via role filters
+- Check `instruments.melody.*.type` — query catalog with matching extra_filters
+- Use `instruments.*.features` to verify: brightness, attack, decay should be in the same ballpark
 
 ### If using Path B (tutorial transcripts):
 - Follow sample type recommendations from the tutorial
 - Match samples to genre (don't use trap 808s on reggaeton, don't use reggaeton rims on trap)
 
 ### General sound selection rules:
-- Rotate sample kits between projects — avoid reusing the same kick/snare/hat across beats
+- **SampleSelector auto-rotates**: it excludes paths/packs used in the last 4 beats via usage_log.json
+- CLI check before starting: `python instruments_query.py --role melody --genre reggaeton --key A`
 - Consider pitch-shifting samples for character (e.g., hi-hats down -2/-3st for darker feel)
+- For stems/variants: query multiple candidates with `query(role, n=6)` and render each
 
 ## Step 4: Render (render_*.py)
 
@@ -110,7 +150,8 @@ If you use both, state which one wins on conflicts. Default: analysis data overr
 
 ### General render rules:
 - Step 0: MIDI fix — strip duplicate tempo events, save as *_FIXED.mid
-- FAUST DSP for synths (pad, lead) via dawdreamer
+- Load samples via SampleSelector (Step 3) — NEVER hardcode paths
+- Prefer catalog samples over FAUST for melody/pad (more realistic). Use FAUST only for sub bass or when no catalog match exists
 - Pedalboard for effects chains (EQ, compression, reverb, limiting)
 - Sidechain bass/pad/lead to kick envelope
 - EQ separation: pad HPF at 150Hz, lead HPF at 200Hz, bass LPF at 1200Hz
@@ -154,9 +195,13 @@ If you use both, state which one wins on conflicts. Default: analysis data overr
 - Each project gets its own directory and GitHub repo
 
 ## Reminders
+- **ALWAYS use `SampleSelector` from `instruments_query.py`** — never hardcode sample paths. The catalog has 15,644 instruments indexed with pitch, key, brightness, attack, and more
+- **NEVER default to FAUST `os.osc(freq)` for melody/pad** — query the catalog first. FAUST sine/saw oscillators are a last resort, not the default. The catalog has 5,557 melodic one-shots (flutes, synths, bells, guitars, pianos) that sound far more realistic
+- **NEVER reuse the 5x detuned saw pad** (the `PAD_DSP` with `os.sawtooth(freq) + os.sawtooth(freq * 1.009) + os.sawtooth(freq * 0.991) + os.sawtooth(freq * 1.018) + os.sawtooth(freq * 0.982)`) — it's been used on too many beats. Pick a different instrument: drawbar organ, FM pad, string ensemble sample, etc.
+- **Call `sel.save()` after every render** — this logs usage so the next beat auto-avoids the same samples
+- **Check `python instruments_query.py --history`** before starting a new beat to see what was used recently
 - Avoid keys of C (C major, C minor) — overused and generic-sounding. Pick keys with more character (F minor, G minor, D minor, Ab major, etc.)
 - Melodies should be quiet and lowkey — never louder than drums/bass
-- Don't default to the same samples every time — explore the kits
 - Run the full analytics pipeline (LUFS + spectral) on every render
 - Pad and lead must be high-passed to stay out of the bass frequency range
 - Add timbre guard comments on critical mix decisions to prevent regressions
