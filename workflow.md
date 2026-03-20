@@ -193,6 +193,15 @@ for note_start, note_num, vel, dur in melody_notes:
 - .gitignore: *.wav, *.mp3, *_FIXED.mid, __pycache__/
 - Track in git: compose_*.py, render_*.py, individual MIDI stems, full arrangement MIDI
 - Each project gets its own directory and GitHub repo
+- **All workflow/task files go in `/Users/ronantakizawa/Documents/instruments/`** — never in project subdirectories
+
+## Sample-Based Tracks (render_groove.py)
+
+- **Unique percussion per track**: Never use the same kick, clap, or hat across multiple tracks. Use sample spectral analysis (centroid, warmth, brightness, onset rate) to score pools of candidates, then hash the track name with per-category seeds to guarantee unique combinations.
+- **Beat-aligned loops**: Use `librosa.beat.beat_track()` to find actual downbeats in the source sample. Snap loop start to detected bar positions — never use onset_strength grid alone, it drifts.
+- **Tempo detection**: Always try multiple ranges (default + hinted at target BPM). Check half/double of detected tempo. Piano samples especially get misdetected (e.g. 161 BPM instead of ~80).
+- **Underwater LPF sections**: Breakdowns must use real LPF sweeps (scipy butter, block-wise), not just volume ducks. Sweep 12kHz→350Hz→12kHz for contrast. Intro starts submerged, outro sinks.
+- **Version numbering**: Check both base output dir AND subdirectories (e.g. Groove_Tracks/) when globbing for existing versions, or versions reset to v1 after moving files.
 
 ## Reminders
 - **ALWAYS use `SampleSelector` from `instruments_query.py`** — never hardcode sample paths. The catalog has 15,644 instruments indexed with pitch, key, brightness, attack, and more
@@ -206,3 +215,6 @@ for note_start, note_num, vel, dur in melody_notes:
 - Pad and lead must be high-passed to stay out of the bass frequency range
 - Add timbre guard comments on critical mix decisions to prevent regressions
 - Every render should produce a new version number, never overwrite previous renders
+- Always use the sample's detected `root_midi` from the index for pitch shifting. Never hardcode ref_midi. Shift formula: `target_midi - root_midi`
+- Buildups/transitions: **4 bars max**, not 8
+- Transition FX: **short and minimal** — 1-2 elements max
