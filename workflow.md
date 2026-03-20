@@ -203,6 +203,81 @@ for note_start, note_num, vel, dur in melody_notes:
 - **Underwater LPF sections**: Breakdowns must use real LPF sweeps (scipy butter, block-wise), not just volume ducks. Sweep 12kHz→350Hz→12kHz for contrast. Intro starts submerged, outro sinks.
 - **Version numbering**: Check both base output dir AND subdirectories (e.g. Groove_Tracks/) when globbing for existing versions, or versions reset to v1 after moving files.
 
+## Sample-Based Trap Tracks (render_trap.py)
+
+- **Local beat-tracking for loop extraction**: NEVER beat-track the entire audio file to find loop boundaries — the global beat grid drifts and doesn't match local bar positions. Instead, extract a generous chunk starting at the user's loop start point, then call `librosa.beat.beat_track()` on just that chunk. Bar boundaries from local tracking are accurate; global tracking is not.
+- **Cut loops to exact bar boundaries**: The loop must end at an exact beat-tracked bar boundary (every 4th beat). If the loop length isn't an exact multiple of the bar duration, the drum grid will drift when the loop repeats. Find the bar boundary closest to the target duration and cut there.
+- **Derive BPM from loop length**: After cutting to an exact bar boundary, compute `bpm = n_bars * 4 * 60.0 / loop_duration`. This locks the drum grid precisely to the sample. Never use librosa's detected BPM directly — it's an estimate that won't match the actual loop length.
+- **Don't trim musical content for alignment**: If the beat tracker says the first beat is at 1.07s, that doesn't mean 0-1.07s is silence. Listen first / check RMS. The music may already be playing. The correct start point is where the musical phrase begins, not where the beat tracker places beat 1.
+- **Half-time feel**: Kick on beats 1 and 3, snare on beat 3 (0-indexed: beat 2). 808 bass follows kick with longer sustain. Hi-hats are 16th notes with 32nd rolls on hooks.
+- **Trap BPM range**: Samples often detect at ~76 BPM (half-time). The actual trap feel is ~152 BPM (double-time) but the half-time value is what locks to the sample.
+- **Metronome debugging**: When alignment is off, render the loop x2 with a metronome overlay to verify. Use the exact same beat interval derived from the loop (`loop_length / (n_bars * 4)`) so clicks stay locked across repeats.
+
+## Sample Scouting Pipeline (sample_scout.py)
+
+When sourcing samples from the internet, don't pick blindly by title or view count. Use `sample_scout.py` to search, download, and auto-rank candidates by audio quality before rendering.
+
+### Commands:
+```bash
+# Search YouTube and list results
+python sample_scout.py search "dark guitar trap loop"
+
+# Full pipeline: search → download → stem-separate → score → rank
+python sample_scout.py scout "dark guitar trap loop" --top 5
+
+# Score and rank existing downloaded samples
+python sample_scout.py rank samples/stems/htdemucs/
+
+# Score a single file
+python sample_scout.py score path/to/no_drums.wav
+```
+
+### Scoring metrics (each 0-1, higher = better):
+| Metric | Weight | What it measures |
+|--------|--------|-----------------|
+| **Loop-ability** | 30% | Best chroma autocorrelation peak — does the sample repeat cleanly? |
+| **Tonal clarity** | 20% | Spectral flatness (low = tonal/melodic, high = noisy) |
+| **Tempo consistency** | 15% | Onset interval variance — steady tempo locks to the grid |
+| **Frequency balance** | 15% | Energy in mids (200-4kHz) — penalizes bass-heavy samples that clash with 808s |
+| **Dynamic range** | 10% | RMS variance — not too compressed, not too spiky |
+| **Duration** | 10% | 15-180s ideal — enough material without filler |
+
+### Sample selection rules:
+- Always `scout` or `rank` before committing to a sample — never pick by title/views alone
+- After stem separation, score the `no_drums.wav` (not the raw audio)
+- Total score > 0.80 = good candidate, > 0.85 = excellent
+- Low loop-ability (< 0.70) means the sample won't loop cleanly — avoid or manually set `--loop-start`
+
+## Gross Beat-Style FX (render_trap.py)
+
+Time/volume manipulation effects applied to the **sample channel only** (drums continue untouched), inspired by FL Studio's Gross Beat plugin. These effects fire at transition points — rises into new sections and end of song.
+
+### Available effects:
+| Effect | Function | What it does |
+|--------|----------|-------------|
+| **reverse** | `gb_reverse()` | Plays segment backwards with fade edges — anticipation before drops |
+| **stutter** | `gb_stutter()` | Rapid repeat of a small slice — glitch effect, configurable divisions |
+| **gate** | `gb_gate()` | Rhythmic 1/8th note volume chops — end-of-song wind-down |
+
+### Removed effects (too heavy-handed for trap):
+- ~~halftime~~ — slows sample to half-speed, too disruptive
+- ~~tape_stop~~ — gradual slowdown, breaks the energy flow
+- ~~scratch~~ — vinyl scratch, too obvious
+
+### Placement rules:
+- **Only at transitions**: rises into hooks, end of song into outro
+- **Never mid-section**: no stutter/gate inside a hook or verse — keep sections clean
+- Effects on sample only, drums always play through unaffected
+- Keep it subtle: 1-2 beat effects, not full bars
+
+### Current placement:
+```
+bar 7  (before Hook 1):  reverse — 2 beats
+bar 39 (before Hook 2):  stutter — 1 beat
+bar 63 (before Hook 3):  reverse — 2 beats
+bar 79 (before Outro):   gate    — 4 beats
+```
+
 ## Reminders
 - **ALWAYS use `SampleSelector` from `instruments_query.py`** — never hardcode sample paths. The catalog has 15,644 instruments indexed with pitch, key, brightness, attack, and more
 - **NEVER default to FAUST `os.osc(freq)` for melody/pad** — query the catalog first. FAUST sine/saw oscillators are a last resort, not the default. The catalog has 5,557 melodic one-shots (flutes, synths, bells, guitars, pianos) that sound far more realistic
