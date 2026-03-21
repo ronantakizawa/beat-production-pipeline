@@ -248,35 +248,73 @@ python sample_scout.py score path/to/no_drums.wav
 - Total score > 0.80 = good candidate, > 0.85 = excellent
 - Low loop-ability (< 0.70) means the sample won't loop cleanly — avoid or manually set `--loop-start`
 
-## Gross Beat-Style FX (render_trap.py)
+## Shared Modules (`/instruments/`)
 
-Time/volume manipulation effects applied to the **sample channel only** (drums continue untouched), inspired by FL Studio's Gross Beat plugin. These effects fire at transition points — rises into new sections and end of song.
+Reusable code lives in shared modules — never duplicate across renderers.
 
-### Available effects:
-| Effect | Function | What it does |
-|--------|----------|-------------|
-| **reverse** | `gb_reverse()` | Plays segment backwards with fade edges — anticipation before drops |
-| **stutter** | `gb_stutter()` | Rapid repeat of a small slice — glitch effect, configurable divisions |
-| **gate** | `gb_gate()` | Rhythmic 1/8th note volume chops — end-of-song wind-down |
+| Module | Contents |
+|--------|----------|
+| `audio_utils.py` | `load_sample`, `place`, `apply_pb`, `stereo_widen`, `create_sample_bed`, `lpf_sweep`, `pitch_shift_sample`, `auto_gain_sample`, `adaptive_hpf`, `add_metronome` |
+| `sample_analysis.py` | `analyze_sample_character`, `detect_sample_tempo`, `detect_sample_key`, `detect_loop_period`, `score_loop_candidates`, `extract_loop_auto`, `extract_loop_at` |
+| `gross_beat.py` | `gb_reverse`, `gb_stutter`, `gb_gate`, `gb_scratch`, `gb_tape_stop`, `gb_halftime`, `apply_gross_beat` |
+| `mix_master.py` | `master_chain`, `lufs_normalize`, `fade_out`, `export_audio`, `mix_analysis`, `master_and_export` |
+| `skeleton_fetch.py` | YouTube search, download, stem-separate, prepare |
+| `skeleton_scout.py` | Quality scoring pipeline (search → download → score → rank) |
 
-### Removed effects (too heavy-handed for trap):
-- ~~halftime~~ — slows sample to half-speed, too disruptive
-- ~~tape_stop~~ — gradual slowdown, breaks the energy flow
-- ~~scratch~~ — vinyl scratch, too obvious
+Import pattern for new renderers:
+```python
+import sys; sys.path.insert(0, '/Users/ronantakizawa/Documents/instruments')
+from audio_utils import load_sample, place, apply_pb, create_sample_bed, auto_gain_sample, adaptive_hpf
+from sample_analysis import detect_sample_tempo, detect_sample_key, extract_loop_auto
+from gross_beat import apply_gross_beat
+from mix_master import master_and_export
+```
+
+## Sample Auto-Gain & Adaptive HPF
+
+Every sample must be normalized before mixing so level and low-end are consistent regardless of source.
+
+- **Auto-gain**: Normalize sample bed to **-18 dB RMS** via `auto_gain_sample()`. Loud samples get turned down, quiet ones up. The mix multiplier (e.g. `0.45`) then means the same thing for every sample.
+- **Adaptive HPF**: Measure low-end energy ratio of the loop via `adaptive_hpf()`. If >20% of energy is below 300Hz, raise the HPF cutoff (up to 200-220Hz) to prevent the sample from muddying the 808/sub bass range. Baseline: 150Hz for trap, 120Hz for boom-bap.
+
+## BPM Sanity Check (boom-bap / slow genres)
+
+After deriving BPM from `n_bars * 4 * 60 / loop_dur`, the beat tracker may have counted too many bars (e.g. 3 bars at 125 BPM when it should be 2 bars at 83 BPM). **Always compare derived BPM against the target hint** and try all possible bar counts (1 to n_bars), picking the one closest to the target. This is critical for slow genres like boom-bap where the beat tracker tends to double-count.
+
+## Gross Beat-Style FX (`/instruments/gross_beat.py`)
+
+Time/volume manipulation effects applied to the **sample channel only** (drums play through unaffected). Effects are randomized per track (seeded by track name) and placed only at transition points.
+
+### All available effects:
+| Effect | Function | Wet/Dry | In default pool? |
+|--------|----------|---------|-----------------|
+| **reverse** | `gb_reverse()` | 100% wet | Yes |
+| **stutter** | `gb_stutter(divisions, wet=0.5)` | 50% blend | Yes (div 4/6/8) |
+| **gate** | `gb_gate(rate, wet=0.5)` | 50% blend | Yes |
+| **scratch** | `gb_scratch()` | 100% wet | Yes |
+| **tape_stop** | `gb_tape_stop()` | 100% wet | No (too heavy) |
+| **halftime** | `gb_halftime()` | 100% wet | No (too disruptive) |
 
 ### Placement rules:
 - **Only at transitions**: rises into hooks, end of song into outro
-- **Never mid-section**: no stutter/gate inside a hook or verse — keep sections clean
-- Effects on sample only, drums always play through unaffected
-- Keep it subtle: 1-2 beat effects, not full bars
+- **Never mid-section**: keep hooks/verses clean
+- **Randomized**: `apply_gross_beat()` picks 1-N effects from the pool, seeded by track name — each song gets a different combo
+- Effects on sample only, drums always play through
+- Stutter and gate use 50% wet/dry blend for subtlety
 
-### Current placement:
-```
-bar 7  (before Hook 1):  reverse — 2 beats
-bar 39 (before Hook 2):  stutter — 1 beat
-bar 63 (before Hook 3):  reverse — 2 beats
-bar 79 (before Outro):   gate    — 4 beats
-```
+## Old-School Boom-Bap Tracks (render_boombap.py)
+
+- **BPM range**: 70-95 BPM. Use BPM sanity check (try all bar counts, pick closest to target) — beat tracker over-counts bars on slow samples.
+- **Full-time drums**: Kick on beats 1 & 3, snare on beats 2 & 4 (NOT half-time like trap). No clap layer.
+- **Simple hi-hats**: Straight 8th notes only — no 16th/32nd rolls. Open hat on "and of 4" every 2-4 bars.
+- **Sub bass, not 808**: Pure sine oscillator via `generate_sub_bass()` with subtle 2nd harmonic. LPF at 200Hz.
+- **Drum break layer**: Time-stretch a break from `oldschoolhiphop/Loops/` to match BPM, mix at 20-30% under individual hits, LPF at 8kHz. Only in hooks.
+- **20ms humanization jitter**: Much larger than trap's 4ms — simulates a live drummer.
+- **Lo-fi processing**: `lofi_process()` on sample bus — bit-crush (12-bit), tape saturation, high-shelf cut. Plus `vinyl_noise()` crackle overlay on full mix.
+- **Parallel drum compression**: 70% dry + 30% heavy-compressed for tape-style grit.
+- **Vintage sample EQ**: HPF 120-200Hz (adaptive), LPF 12kHz, cut highs for authentic feel.
+- **Arrangement**: 64 bars — Intro(8) → Hook(16) → Verse(16) → Hook(16) → Outro(8). Gradual element entry in intro (sample → hats → kick → snare+bass).
+- **Master LPF at 16kHz** (darker than trap's 18kHz).
 
 ## Reminders
 - **ALWAYS use `SampleSelector` from `instruments_query.py`** — never hardcode sample paths. The catalog has 15,644 instruments indexed with pitch, key, brightness, attack, and more
