@@ -1,8 +1,9 @@
 """
 sample_analysis.py -- Sample analysis and loop extraction utilities.
 
-Detect tempo, key, loop period, extract bar-aligned loops, and score
-candidate loop positions by loop-ability and simplicity.
+Uses madmom (CRNN neural network) for beat/tempo detection with librosa
+as fallback. Madmom is significantly more accurate than librosa's
+onset-correlation method for diverse audio.
 
 Usage:
     from sample_analysis import detect_sample_tempo, detect_sample_key,
@@ -11,8 +12,53 @@ Usage:
 
 import numpy as np
 import librosa
+import tempfile, os
+from scipy.io import wavfile
 
 SR = 44100
+
+# Monkey-patch numpy for madmom compatibility (Python 3.11+)
+np.float = float
+np.int = int
+np.bool = bool
+np.str = str
+np.complex = complex
+np.object = object
+
+try:
+    import madmom
+    HAVE_MADMOM = True
+except ImportError:
+    HAVE_MADMOM = False
+
+
+def _madmom_beats(audio, sr=SR):
+    """Get beat positions using madmom's RNN beat tracker.
+    Returns beat times in seconds."""
+    # Madmom needs a file path, so write temp wav
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+        tmp_path = f.name
+        wav_data = (audio * 32767).clip(-32767, 32767).astype(np.int16)
+        wavfile.write(tmp_path, sr, wav_data)
+    try:
+        proc = madmom.features.beats.DBNBeatTrackingProcessor(fps=100)
+        act = madmom.features.beats.RNNBeatProcessor()(tmp_path)
+        beats = proc(act)
+        return beats
+    finally:
+        os.unlink(tmp_path)
+
+
+def _madmom_tempo(audio, sr=SR):
+    """Get tempo using madmom. Returns BPM float."""
+    beats = _madmom_beats(audio, sr)
+    if len(beats) < 2:
+        return None
+    intervals = np.diff(beats)
+    intervals = intervals[(intervals > 0.2) & (intervals < 2.0)]  # filter outliers
+    if len(intervals) < 2:
+        return None
+    return float(60.0 / np.median(intervals))
 
 
 def analyze_sample_character(audio, sr=SR):
@@ -41,12 +87,29 @@ def analyze_sample_character(audio, sr=SR):
 
 
 def detect_sample_tempo(audio, sr=SR, target_bpm=90.0, bpm_range=(70, 200)):
-    """Detect tempo with half/double compensation toward target BPM."""
+    """Detect tempo using madmom (primary) + librosa (fallback).
+    Applies half/double compensation toward target BPM."""
+    raw_tempos = []
+
+    # Madmom (neural network — more accurate)
+    if HAVE_MADMOM:
+        try:
+            madmom_bpm = _madmom_tempo(audio, sr)
+            if madmom_bpm:
+                raw_tempos.append(madmom_bpm)
+                print(f'    madmom: {madmom_bpm:.1f} BPM')
+        except Exception as e:
+            print(f'    madmom failed: {e}')
+
+    # Librosa (fallback)
     tempo_default = float(np.atleast_1d(librosa.beat.tempo(y=audio, sr=sr))[0])
     tempo_hinted = float(np.atleast_1d(
         librosa.beat.tempo(y=audio, sr=sr, start_bpm=target_bpm))[0])
+    raw_tempos.extend([tempo_default, tempo_hinted])
+
+    # Try half/double of all detected tempos, pick closest to target
     candidates = []
-    for t in [tempo_default, tempo_hinted]:
+    for t in raw_tempos:
         for mult in [0.5, 1.0, 2.0]:
             adj = t * mult
             if bpm_range[0] < adj < bpm_range[1]:
@@ -58,10 +121,47 @@ def detect_sample_tempo(audio, sr=SR, target_bpm=90.0, bpm_range=(70, 200)):
 
 
 def detect_sample_key(audio, sr=SR):
-    """Detect key via chroma energy distribution."""
+    """Detect key using Krumhansl-Schmuckler algorithm.
+
+    Correlates chroma energy distribution against major/minor key profiles
+    for all 24 keys. Returns the key with the highest Pearson correlation.
+
+    Profiles from Krumhansl & Kessler (1982), as used in the K-S algorithm.
+    Much more accurate than simple chroma argmax.
+    """
+    from scipy.stats import zscore as _zscore
+    from scipy.linalg import circulant as _circulant
+
     chroma = librosa.feature.chroma_cqt(y=audio, sr=sr)
+    chroma_dist = chroma.mean(axis=1)  # (12,) pitch class distribution
+
+    if chroma_dist.sum() < 1e-9:
+        return 'C'
+
+    x = _zscore(chroma_dist)
+
+    # Krumhansl-Kessler key profiles (C major / C minor reference)
+    major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
+                              2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+    minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
+                              2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+
+    major_z = _zscore(major_profile)
+    minor_z = _zscore(minor_profile)
+
+    # Circulant matrix gives all 12 rotations (C, C#, D, ... B)
+    major_scores = _circulant(major_z).T.dot(x)  # (12,)
+    minor_scores = _circulant(minor_z).T.dot(x)  # (12,)
+
     key_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-    return key_names[int(np.argmax(chroma.mean(axis=1)))]
+
+    best_major_idx = int(np.argmax(major_scores))
+    best_minor_idx = int(np.argmax(minor_scores))
+
+    if major_scores[best_major_idx] >= minor_scores[best_minor_idx]:
+        return key_names[best_major_idx]
+    else:
+        return key_names[best_minor_idx] + 'm'
 
 
 def detect_loop_period(audio, sr=SR):
@@ -80,6 +180,98 @@ def detect_loop_period(audio, sr=SR):
         corrs.append((lag * hop_sec, sim))
     corrs.sort(key=lambda x: -x[1])
     return corrs[0][0]
+
+
+# ============================================================================
+# Beat-aligned multi-feature loop finder
+# Inspired by librosa_loopfinder: beat-track first, compute feature vectors at
+# each beat boundary, then find beat pairs with minimal feature distance whose
+# gap matches the target bar count.
+# Features: chroma (12), spectral contrast (7), onset strength (1), RMS (1).
+# Distance: L1 (Manhattan) — robust to outliers, fast.
+# ============================================================================
+
+def _get_beats(audio, sr=SR, target_bpm=None):
+    """Get beat times using madmom (primary) or librosa (fallback)."""
+    beats_sec = None
+    if HAVE_MADMOM:
+        try:
+            beats_sec = _madmom_beats(audio, sr)
+            if beats_sec is not None and len(beats_sec) >= 4:
+                print(f'    madmom beats: {len(beats_sec)} ({beats_sec[:4]}...)')
+        except Exception:
+            beats_sec = None
+    if beats_sec is None or len(beats_sec) < 4:
+        start_bpm = target_bpm if target_bpm else 120
+        _, beat_frames = librosa.beat.beat_track(y=audio, sr=sr,
+                                                  start_bpm=start_bpm,
+                                                  tightness=400)
+        beats_sec = librosa.frames_to_time(beat_frames, sr=sr)
+        print(f'    librosa beats: {len(beats_sec)}')
+    return np.array(beats_sec, dtype=np.float64)
+
+
+def _beat_features(audio, sr, beats_sec, hop=512):
+    """Compute a feature vector for each beat boundary.
+    Returns (n_beats, n_features) array.
+    Features: chroma(12) + spectral_contrast(7) + onset_str(1) + rms(1) = 21."""
+    chroma = librosa.feature.chroma_cqt(y=audio, sr=sr, hop_length=hop)
+    contrast = librosa.feature.spectral_contrast(y=audio, sr=sr, hop_length=hop)
+    onset_env = librosa.onset.onset_strength(y=audio, sr=sr, hop_length=hop)
+    rms = librosa.feature.rms(y=audio, hop_length=hop)[0]
+
+    beat_frames = librosa.time_to_frames(beats_sec, sr=sr, hop_length=hop)
+    beat_frames = np.clip(beat_frames, 0, chroma.shape[1] - 1)
+
+    # Aggregate features in a small window around each beat (±2 frames)
+    feats = []
+    for bf in beat_frames:
+        lo = max(0, bf - 2)
+        hi = min(chroma.shape[1], bf + 3)
+        f = np.concatenate([
+            chroma[:, lo:hi].mean(axis=1),        # 12
+            contrast[:, lo:hi].mean(axis=1),       # 7
+            [onset_env[lo:hi].mean()],             # 1
+            [rms[lo:hi].mean()],                   # 1
+        ])
+        feats.append(f)
+    feats = np.array(feats, dtype=np.float32)
+
+    # Normalize each feature dimension to [0,1] for fair distance comparison
+    mins = feats.min(axis=0, keepdims=True)
+    maxs = feats.max(axis=0, keepdims=True)
+    rng = maxs - mins + 1e-9
+    feats = (feats - mins) / rng
+    return feats
+
+
+def _find_loop_pairs(beats_sec, beat_feats, target_bars, target_bpm,
+                     bar_tolerance=0.15, top_n=10):
+    """Find beat pairs whose gap = target_bars at target_bpm with minimal
+    feature distance. Returns list of (distance, start_beat_idx, end_beat_idx)."""
+    beat_dur = 60.0 / target_bpm
+    target_dur = target_bars * 4 * beat_dur
+    tol = target_dur * bar_tolerance  # allow ±15% length tolerance
+
+    n = len(beats_sec)
+    pairs = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            gap = beats_sec[j] - beats_sec[i]
+            if gap < target_dur - tol:
+                continue
+            if gap > target_dur + tol:
+                break  # beats are sorted, no point continuing
+            # L1 distance between feature vectors at loop start/end
+            dist = float(np.sum(np.abs(beat_feats[i] - beat_feats[j])))
+            # Penalize segments with low energy (average RMS feature across beats)
+            seg_rms = beat_feats[i:j+1, -1].mean()
+            if seg_rms < 0.1:
+                dist += 5.0  # penalty for quiet segments
+            pairs.append((dist, i, j))
+
+    pairs.sort(key=lambda x: x[0])
+    return pairs[:top_n]
 
 
 def score_loop_candidates(raw_sample, loop_period, sr=SR, top_n=5):
@@ -110,25 +302,72 @@ def score_loop_candidates(raw_sample, loop_period, sr=SR, top_n=5):
     return candidates[:top_n]
 
 
-def extract_bar_aligned_loop(chunk, sr=SR, target_dur=None):
-    """Beat-track a chunk and extract a bar-aligned loop.
-    Returns (loop_audio, n_bars, bar_times)."""
-    _, local_beat_frames = librosa.beat.beat_track(y=chunk, sr=sr)
-    local_beat_samps = librosa.frames_to_samples(local_beat_frames)
-    local_bar_samps = local_beat_samps[::4]
-    local_bar_times = local_bar_samps / sr
+def extract_bar_aligned_loop(chunk, sr=SR, target_dur=None, target_bpm=None):
+    """Extract a loop snapped to beat boundaries using multi-feature scoring.
+    Returns (loop_audio, n_bars, bar_times, loop_start_samp)."""
+    beats_sec = _get_beats(chunk, sr, target_bpm=target_bpm)
 
-    bar_durs = np.diff(local_bar_times)
-    cumulative = np.concatenate([[0], np.cumsum(bar_durs)])
-    end_idx = int(np.argmin(np.abs(cumulative - target_dur)))
-    if end_idx < 2:
-        end_idx = min(2, len(local_bar_samps) - 1)
-    n_bars = end_idx
+    if len(beats_sec) < 4:
+        # Not enough beats — fallback to raw cut
+        loop_samp = int(target_dur * sr) if target_dur else len(chunk)
+        loop = chunk[:min(loop_samp, len(chunk))].copy()
+        n_bars = max(1, round((len(loop) / sr) / (target_dur or 4.0)))
+        return loop, n_bars, np.linspace(0, len(loop)/sr, n_bars+1), 0
 
-    loop_start = int(local_bar_samps[0])
-    loop_end = int(local_bar_samps[end_idx])
+    # Estimate BPM from beat intervals if not provided
+    if target_bpm is None:
+        intervals = np.diff(beats_sec)
+        intervals = intervals[(intervals > 0.15) & (intervals < 2.0)]
+        if len(intervals) >= 2:
+            target_bpm = 60.0 / np.median(intervals)
+        else:
+            target_bpm = 120.0
+
+    beat_dur = 60.0 / target_bpm
+
+    # Determine target bar count from target_dur
+    if target_dur:
+        target_bars = max(1, round(target_dur / (4 * beat_dur)))
+    else:
+        target_bars = 4
+
+    # Compute multi-feature vectors at each beat
+    beat_feats = _beat_features(chunk, sr, beats_sec)
+
+    # Find best loop pairs
+    pairs = _find_loop_pairs(beats_sec, beat_feats, target_bars, target_bpm)
+
+    if not pairs:
+        # Relax tolerance and try again
+        pairs = _find_loop_pairs(beats_sec, beat_feats, target_bars, target_bpm,
+                                  bar_tolerance=0.30)
+
+    if pairs:
+        best_dist, bi, bj = pairs[0]
+        loop_start = int(beats_sec[bi] * sr)
+        loop_end = int(beats_sec[bj] * sr)
+        print(f'    Best loop pair: beat {bi}->{bj}  dist={best_dist:.3f}  '
+              f'dur={beats_sec[bj]-beats_sec[bi]:.2f}s')
+    else:
+        # Absolute fallback: first N bars from first beat
+        loop_start = int(beats_sec[0] * sr)
+        loop_dur_samp = int(target_bars * 4 * beat_dur * sr)
+        loop_end = min(loop_start + loop_dur_samp, len(chunk))
+
     loop = chunk[loop_start:loop_end].copy()
-    return loop, n_bars, local_bar_times[:end_idx + 1], loop_start
+    actual_dur = len(loop) / sr
+
+    # Compute n_bars from actual duration and target BPM
+    n_bars = max(1, round(actual_dur / (4 * beat_dur)))
+
+    # Short crossfade for seamless looping
+    xf = min(int(0.005 * sr), len(loop) // 8)
+    if xf > 0 and len(loop) > xf * 2:
+        loop[:xf] *= np.linspace(0, 1, xf).astype(np.float32)
+        loop[-xf:] *= np.linspace(1, 0, xf).astype(np.float32)
+
+    bar_times = np.linspace(0, actual_dur, n_bars + 1)
+    return loop, n_bars, bar_times, loop_start
 
 
 def extract_loop_at(raw_sample, loop_start_s, sr=SR, loop_end_s=None):
@@ -143,33 +382,117 @@ def extract_loop_at(raw_sample, loop_start_s, sr=SR, loop_end_s=None):
         target_dur = detect_loop_period(chunk, sr)
         print(f'  Auto-detected loop period: {target_dur:.2f}s')
 
-    loop, n_bars, bar_times, loop_start_samp = extract_bar_aligned_loop(chunk, sr, target_dur)
+    loop, n_bars, bar_times, loop_start_samp = extract_bar_aligned_loop(
+        chunk, sr, target_dur)
     abs_start = loop_start_s + loop_start_samp / sr
     print(f'  Loop: {abs_start:.2f}s ({len(loop)/sr:.2f}s, {n_bars} bars)')
     print(f'  Bar boundaries: {bar_times}')
     return loop, n_bars
 
 
-def extract_loop_auto(raw_sample, sr=SR):
-    """Auto-detect best loop position and extract bar-aligned loop."""
-    print('  Auto-detecting loop period ...')
-    mid = len(raw_sample) // 3
-    detect_chunk = raw_sample[mid:mid + min(int(60 * sr), len(raw_sample) - mid)]
-    loop_period = detect_loop_period(detect_chunk, sr)
-    print(f'  Detected period: {loop_period:.2f}s')
+def extract_loop_auto(raw_sample, sr=SR, target_bpm=None):
+    """Auto-detect best loop using beat-aligned multi-feature scoring.
 
-    candidates = score_loop_candidates(raw_sample, loop_period, sr)
-    for i, c in enumerate(candidates):
-        ts = c[1] / sr
-        mins, secs = int(ts // 60), ts % 60
-        print(f'  #{i+1}: {mins}:{secs:05.2f} (score={c[0]:.3f}, loop={c[2]:.3f}, '
-              f'rms={c[3]:.4f}, simple={c[4]:.3f})')
+    Algorithm (inspired by librosa_loopfinder):
+      1. Beat-track the full sample (madmom primary, librosa fallback)
+      2. Compute feature vectors at each beat: chroma(12) + spectral_contrast(7)
+         + onset_strength(1) + RMS(1)
+      3. Normalize features, compute pairwise L1 distance between all beat pairs
+      4. Filter pairs by target loop duration (2 or 4 bars at detected BPM)
+      5. Rank by distance (lower = more seamless loop) + energy penalty
+      6. Extract the winning segment with crossfade
+    """
+    print('  Beat-aligned loop detection ...')
 
-    best_pos = candidates[0][1]
-    local_end = min(best_pos + int(loop_period * 2.5 * sr), len(raw_sample))
-    local_chunk = raw_sample[best_pos:local_end]
-    loop, n_bars, bar_times, loop_start_samp = extract_bar_aligned_loop(
-        local_chunk, sr, loop_period)
-    abs_start = best_pos / sr + loop_start_samp / sr
-    print(f'  Best section: {abs_start:.2f}s ({len(loop)/sr:.2f}s, {n_bars} bars)')
+    # Step 1: Get beats for the whole sample
+    beats_sec = _get_beats(raw_sample, sr, target_bpm=target_bpm)
+    if len(beats_sec) < 4:
+        print('    Too few beats, falling back to chroma period detection')
+        loop_period = detect_loop_period(raw_sample, sr)
+        candidates = score_loop_candidates(raw_sample, loop_period, sr)
+        best_pos = candidates[0][1]
+        loop = raw_sample[best_pos:best_pos + int(loop_period * sr)].copy()
+        n_bars = max(1, round(loop_period / 2.0))
+        return loop, n_bars
+
+    # Estimate BPM from beats
+    intervals = np.diff(beats_sec)
+    intervals = intervals[(intervals > 0.15) & (intervals < 2.0)]
+    detected_bpm = 60.0 / np.median(intervals) if len(intervals) >= 2 else 120.0
+
+    # Half/double toward target if provided
+    if target_bpm:
+        best_bpm, best_dist = detected_bpm, abs(detected_bpm - target_bpm)
+        for mult in [0.5, 2.0]:
+            adj = detected_bpm * mult
+            d = abs(adj - target_bpm)
+            if d < best_dist:
+                best_bpm, best_dist = adj, d
+        detected_bpm = best_bpm
+    print(f'    BPM from beats: {detected_bpm:.1f}')
+
+    beat_dur = 60.0 / detected_bpm
+
+    # Step 2: Compute features at each beat
+    beat_feats = _beat_features(raw_sample, sr, beats_sec)
+    print(f'    Feature matrix: {beat_feats.shape[0]} beats x {beat_feats.shape[1]} features')
+
+    # Step 3-5: Try 4-bar loop first, then 2-bar
+    best_pairs = None
+    best_n_bars = 4
+    for try_bars in [4, 2, 8]:
+        pairs = _find_loop_pairs(beats_sec, beat_feats, try_bars, detected_bpm,
+                                  bar_tolerance=0.15)
+        if pairs:
+            print(f'    {try_bars}-bar candidates: {len(pairs)} '
+                  f'(best dist={pairs[0][0]:.3f})')
+            if best_pairs is None or pairs[0][0] < best_pairs[0][0]:
+                best_pairs = pairs
+                best_n_bars = try_bars
+
+    if not best_pairs:
+        # Relax tolerance
+        for try_bars in [4, 2]:
+            pairs = _find_loop_pairs(beats_sec, beat_feats, try_bars, detected_bpm,
+                                      bar_tolerance=0.30)
+            if pairs:
+                best_pairs = pairs
+                best_n_bars = try_bars
+                break
+
+    if not best_pairs:
+        print('    No beat-aligned pairs found, falling back to chroma period')
+        loop_period = detect_loop_period(raw_sample, sr)
+        candidates = score_loop_candidates(raw_sample, loop_period, sr)
+        best_pos = candidates[0][1]
+        loop = raw_sample[best_pos:best_pos + int(loop_period * sr)].copy()
+        n_bars = max(1, round(loop_period / (4 * beat_dur)))
+        return loop, n_bars
+
+    # Step 6: Extract winning segment
+    dist, bi, bj = best_pairs[0]
+    loop_start = int(beats_sec[bi] * sr)
+    loop_end = int(beats_sec[bj] * sr)
+    loop = raw_sample[loop_start:loop_end].copy()
+    actual_dur = len(loop) / sr
+    n_bars = max(1, round(actual_dur / (4 * beat_dur)))
+
+    # Print top 3 candidates
+    for rank, (d, i, j) in enumerate(best_pairs[:3]):
+        t = beats_sec[i]
+        dur = beats_sec[j] - beats_sec[i]
+        mins, secs = int(t // 60), t % 60
+        seg = raw_sample[int(beats_sec[i]*sr):int(beats_sec[j]*sr)]
+        rms = np.sqrt(np.mean(seg ** 2))
+        print(f'  #{rank+1}: {mins}:{secs:05.2f} (dist={d:.3f}, dur={dur:.2f}s, '
+              f'rms={rms:.4f}, bars={round(dur/(4*beat_dur))})')
+
+    # Crossfade
+    xf = min(int(0.005 * sr), len(loop) // 8)
+    if xf > 0 and len(loop) > xf * 2:
+        loop[:xf] *= np.linspace(0, 1, xf).astype(np.float32)
+        loop[-xf:] *= np.linspace(1, 0, xf).astype(np.float32)
+
+    print(f'  Selected: {beats_sec[bi]:.2f}s ({actual_dur:.2f}s, {n_bars} bars, '
+          f'{detected_bpm:.1f} BPM)')
     return loop, n_bars

@@ -55,43 +55,6 @@ def gb_gate(audio, sr, rate=8, wet=0.5):
     return (audio * (1 - wet) + gated * wet).astype(np.float32)
 
 
-def gb_scratch(audio, sr):
-    """Vinyl scratch — quick pitch bend up then back down."""
-    n = len(audio)
-    t = np.linspace(0, 1, n)
-    offset = np.sin(t * np.pi * 2) * 0.3
-    read_pos = np.clip((t + offset) * (n - 1), 0, n - 1).astype(int)
-    out = audio[read_pos]
-    xf = min(int(0.003 * sr), n // 8)
-    if xf > 0:
-        out[:xf] *= np.linspace(0, 1, xf).astype(np.float32)
-        out[-xf:] *= np.linspace(1, 0, xf).astype(np.float32)
-    return out.astype(np.float32)
-
-
-def gb_tape_stop(audio, sr):
-    """Gradual slowdown to a stop."""
-    n = len(audio)
-    t = np.linspace(0, 1, n)
-    read_pos = (1.0 - (1.0 - t) ** 2.5) * n * 0.6
-    read_pos = np.clip(read_pos, 0, n - 1).astype(int)
-    out = audio[read_pos]
-    vol = np.linspace(1.0, 0.0, n).astype(np.float32) ** 0.4
-    return (out * vol).astype(np.float32)
-
-
-def gb_halftime(audio, sr):
-    """Half-speed playback — pitch drops an octave."""
-    n = len(audio)
-    half = audio[:n // 2]
-    indices = np.linspace(0, len(half) - 1, n).astype(int)
-    out = half[indices]
-    xf = min(int(0.005 * sr), n // 8)
-    if xf > 0:
-        out[:xf] *= np.linspace(0, 1, xf).astype(np.float32)
-    return out.astype(np.float32)
-
-
 # Default FX pool for transition points
 DEFAULT_FX_POOL = [
     ('reverse',  gb_reverse,  {'beat_offset': 2, 'n_beats': 2}),
@@ -99,7 +62,6 @@ DEFAULT_FX_POOL = [
     ('stutter6', gb_stutter,  {'beat_offset': 3, 'n_beats': 1, 'divisions': 6}),
     ('stutter8', gb_stutter,  {'beat_offset': 2, 'n_beats': 2, 'divisions': 8}),
     ('gate',     gb_gate,     {'beat_offset': 0, 'n_beats': 4, 'rate': 8}),
-    ('scratch',  gb_scratch,  {'beat_offset': 2, 'n_beats': 2}),
 ]
 
 

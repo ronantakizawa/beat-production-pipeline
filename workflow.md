@@ -285,15 +285,12 @@ After deriving BPM from `n_bars * 4 * 60 / loop_dur`, the beat tracker may have 
 
 Time/volume manipulation effects applied to the **sample channel only** (drums play through unaffected). Effects are randomized per track (seeded by track name) and placed only at transition points.
 
-### All available effects:
-| Effect | Function | Wet/Dry | In default pool? |
-|--------|----------|---------|-----------------|
-| **reverse** | `gb_reverse()` | 100% wet | Yes |
-| **stutter** | `gb_stutter(divisions, wet=0.5)` | 50% blend | Yes (div 4/6/8) |
-| **gate** | `gb_gate(rate, wet=0.5)` | 50% blend | Yes |
-| **scratch** | `gb_scratch()` | 100% wet | Yes |
-| **tape_stop** | `gb_tape_stop()` | 100% wet | No (too heavy) |
-| **halftime** | `gb_halftime()` | 100% wet | No (too disruptive) |
+### Available effects:
+| Effect | Function | Wet/Dry |
+|--------|----------|---------|
+| **reverse** | `gb_reverse()` | 100% wet |
+| **stutter** | `gb_stutter(divisions, wet=0.5)` | 50% blend (div 4/6/8) |
+| **gate** | `gb_gate(rate, wet=0.5)` | 50% blend |
 
 ### Placement rules:
 - **Only at transitions**: rises into hooks, end of song into outro
@@ -316,7 +313,19 @@ Time/volume manipulation effects applied to the **sample channel only** (drums p
 - **Arrangement**: 64 bars — Intro(8) → Hook(16) → Verse(16) → Hook(16) → Outro(8). Gradual element entry in intro (sample → hats → kick → snare+bass).
 - **Master LPF at 16kHz** (darker than trap's 18kHz).
 
+## Roadmap / Future Improvements
+
+### Sample Pipeline
+- **Chord detection on samples** — we detect key but not the chord progression. Bass currently follows a generic `[0, 0, -5, -3]` pattern. If we detected the actual chords, bass and any added layers would follow the harmony.
+- **Smarter loop alignment** — beat tracker still miscounts bars regularly. Could use onset-based alignment (find the strongest transient) instead of relying purely on librosa's beat tracker.
+- **Auto tempo-match without pitch shift** — currently BPM is locked from loop length. If the sample is 95 BPM but we want 122, we have no clean way to time-stretch without artifacts.
+
+### Architecture
+- **Unified renderer** — trap, boom-bap, and jazz house share 70% of their code. A single `render_beat.py` with a genre config (JSON/dict) for drum patterns, BPM range, jitter, arrangement, mix levels would eliminate 3 separate 800-line files.
+- **Preset system** — `genre_presets.json` defining: BPM range, drum pattern (kick/snare/hat positions), arrangement structure, mix levels, FX chain, lo-fi intensity. Adding a new genre = adding a JSON block, not writing a new renderer.
+
 ## Reminders
+- **BPM HARD CAP: 150 BPM maximum** — no genre should ever render above 150 BPM. If a sample detects above 150, halve it. Breakcore targets ~100 BPM, trap ~148, boom-bap ~90, jazz house ~122. Fast tempos sound rushed and unmusical.
 - **ALWAYS use `SampleSelector` from `instruments_query.py`** — never hardcode sample paths. The catalog has 15,644 instruments indexed with pitch, key, brightness, attack, and more
 - **NEVER default to FAUST `os.osc(freq)` for melody/pad** — query the catalog first. FAUST sine/saw oscillators are a last resort, not the default. The catalog has 5,557 melodic one-shots (flutes, synths, bells, guitars, pianos) that sound far more realistic
 - **NEVER reuse the 5x detuned saw pad** (the `PAD_DSP` with `os.sawtooth(freq) + os.sawtooth(freq * 1.009) + os.sawtooth(freq * 0.991) + os.sawtooth(freq * 1.018) + os.sawtooth(freq * 0.982)`) — it's been used on too many beats. Pick a different instrument: drawbar organ, FM pad, string ensemble sample, etc.
@@ -331,3 +340,5 @@ Time/volume manipulation effects applied to the **sample channel only** (drums p
 - Always use the sample's detected `root_midi` from the index for pitch shifting. Never hardcode ref_midi. Shift formula: `target_midi - root_midi`
 - Buildups/transitions: **4 bars max**, not 8
 - Transition FX: **short and minimal** — 1-2 elements max
+- **Hi-hats: SIMPLE by default** — straight 8th notes with on-beat/off-beat velocity contrast. No 16th rolling, no 32nd rolls, no triplet hats unless a reference track analysis explicitly shows them. Complex hat patterns distract from melodies and sound overproduced.
+- **Snares/claps: SIMPLE by default** — clap on 2 and 4 only. No ghost snares, no syncopated extra hits, no snare rolls mid-bar. The backbeat should be steady and predictable. Only add ghost notes if the reference analysis `drum_pattern` contains them.

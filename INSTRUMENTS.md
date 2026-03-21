@@ -140,6 +140,40 @@ Quick-reference for choosing samples when building a new beat. Organized by genr
 - `sum other loops i liked/` — melodic loops with BPM + key in filenames: `{SOSA} waters [162 BPM G# minor].wav`, `{SOSA} cassiopeia [165 BPM F# minor].wav`
 - **Best for:** High-BPM drill/plugg drums, melodic loops already labeled by key and tempo
 
+**`rap5/`** — 1728 files, ProdScope mega kit + vocal presets
+- `808s/` — 24 named 808s: `ProdScope - Carti - 808.wav`, `ProdScope - Magnolia - 808.wav`, `ProdScope - Spinz Distorted - 808.wav`, etc.
+- `Kicks/` — 41 kicks (`Kick (1–41).wav`)
+- `Snares/` — 115 snares (`Snare (1–115).wav`) + MIDI snare patterns
+- `Claps/` — 88 claps (`Clap (1–88).wav`) + 8-bar clap MIDI
+- `Rim/` — 60 rim shots (`Rim (1–60).wav`)
+- `Hats/Closed/` — 113 closed hats (`Hat (1–113).wav`) + MIDI hat patterns
+- `Hats/Open/` — 36 open hats (`OH (1–36).wav`)
+- `Percs/` — 197 percs organized: Camera, Clock, Hits, Scratches, Shaker, Snaps, Stomps, Tamb, Toms, Triangle, Vox, Zap
+- `FX/` — 169 FX: Crashes, Downlifter, Explosion, Guns, Money, Noises, Riser, Sirens, Swords, Textures, Transitions, Video Games, Whips
+- `One Shots/` — 109 one-shots: Bass, Church Bells, Piano (`ProdScope - Piano C (1–71).wav`)
+- `Loops/` — sample loops with BPM labels + MIDI (Acacia, Tsunami packs)
+- `Mixer Presets/` — FL Studio mixer presets for 808s, claps, hats, kicks, snares, master, vocal
+- `Mixer Presets/Vocal/` — vocal presets by artist: Playboi Carti, Ken Carson, Yeat, SoFayGo, Lil Uzi, Summrs, Juice WRLD, Pierre Bourne, etc. + Hyperpop collection
+- **Best for:** Massive numbered drum collection for easy browsing, Carti/Magnolia-style 808s, piano one-shots, artist vocal presets, Opium/rage trap
+
+**`rap6/`** — 722 files, curated producer kit (Cardo, Pharrell, 9th Wonder, Alchemist, Murda style)
+- `808s/` — 36 files: `808 (Vinylz).wav`, `808 [ cardo ].wav`, `Bass (Pharrell).wav`, `BWB VAULT 808 (Fki).wav`, `CC - 808 Kick.wav`, `Circles 808.wav`
+- `Kicks/` — 119 kicks: `Alchemist Kick 9.wav`, `CC - Clutch Kick.wav`, `9th Wonder Kicks_bip_1.wav`, `[kick] circles.wav`
+- `Snares/` — 108 snares: `Alchemist Snare 5.wav`, `CC - Attack Snare.wav`, `9TH WONDER SNARE_bip.wav`, `(Snare) Diplomatic.wav`
+- `Claps/` — 30 claps: `CC - Aqua Clap.wav`, `Clap (Vinylz).wav`, `Clap [ Grindin_ ].wav`
+- `Closed Hats/` — 76 hats: `CC - Adventure Hat.WAV`, `[Hi Hat] Thundercat.wav`, `BWB UPGRADE3 Hi-HAT (21).wav`
+- `Open Hats/` — 23 open hats: `MURDA_HAT_OPEN_ZETO.wav`, `Open hat 07 (Gilberto Gil - Morena).wav`, vinyl-sampled hats
+- `Percs/` — 121 percs: cowbells (`Cowbell 01–05`), congas, agogos, triangles, toms, shakers, `Pharrell Pitch Click.wav`, `cardo cowbell 2k17.wav`
+- `Crashes & Cymbals/` — 8 crashes
+- `FX/` — 5 FX
+- `Melodic loops/` — 32 loops with BPM in filenames: `! 86 bpm.wav`, `156 bpm.wav`, `128 bpm pad.wav`
+- `Drum loops/` — 22 drum loops
+- `Perc loops/` — 18 perc loops
+- `Vox/` — 15 vocal chops: `BWB 5 Chant J Cole.wav`, `!! belong to the world vox.wav`, Diplo/Noisia samples
+- `Scores/` — 23 FL Studio `.fsc` score files (not audio)
+- `Extras/` — 60 files: reference tracks, breaks, misc (`Circles.wav`, `9th Wonder Sample Mix`, `Clams Casino-Level 1`)
+- **Best for:** Producer-curated sounds (Pharrell, Cardo, 9th Wonder, Alchemist style), vinyl-sampled drums, soulful/boom-bap adjacent trap, cowbell variety
+
 ---
 
 ### House / Electronic
@@ -291,17 +325,20 @@ Rhodes_4.wav            — FL Rhodes one-shot (~0.55s) ← used in Sola
 | Need | Best Options |
 |------|-------------|
 | **Dembow kick** | `REGGAETON 4/Kicks/`, `reggaetondrums/Bombos/`, `reggaeton5/XXL Kicks/` |
-| **Trap kick** | `Obie/MODERN TRAP/`, `Metro Boomin/Kicks/`, `Juicy Jules/☆ Kicks/`, `rap3/`, `rap4/lil drum kit/KICK/` |
+| **Trap kick** | `Obie/MODERN TRAP/`, `Metro Boomin/Kicks/`, `Juicy Jules/☆ Kicks/`, `rap3/`, `rap4/lil drum kit/KICK/`, `rap5/Kicks/`, `rap6/Kicks/` |
 | **Snare (reggaeton)** | `REGGAETON 4/Snare/`, `reggaetondrums/Redoblantes/`, `reggaeton5/XXL Snares/` |
-| **Snare (trap)** | `Obie/MODERN TRAP/`, `VIRION/Snare/`, `Lex Luger/`, `rap2/Snares/`, `rap3/` |
+| **Snare (trap)** | `Obie/MODERN TRAP/`, `VIRION/Snare/`, `Lex Luger/`, `rap2/Snares/`, `rap3/`, `rap5/Snares/`, `rap6/Snares/` |
 | **Plugg/Atlanta trap drums** | `rap3/` (Lil Baby stems by song), `rap2/` |
 | **Drill/high-BPM drums** | `rap4/lil drum kit/`, `Obie/DRILL/` |
-| **Melodic loops (keyed)** | `rap4/sum other loops i liked/` (BPM+key in filename), `Care Package/` |
-| **808 bass** | `Juicy Jules/☆ 808s/`, `Metro Boomin/808s/`, `Free 808 Samples/` |
+| **Opium/rage trap drums** | `rap5/` (ProdScope Carti/Magnolia 808s), `Obie/MODERN TRAP/` |
+| **Soulful/boom-bap trap** | `rap6/` (Pharrell, Cardo, 9th Wonder, Alchemist style drums) |
+| **Melodic loops (keyed)** | `rap4/sum other loops i liked/` (BPM+key in filename), `Care Package/`, `rap6/Melodic loops/` |
+| **808 bass** | `Juicy Jules/☆ 808s/`, `Metro Boomin/808s/`, `Free 808 Samples/`, `rap5/808s/` (named: Carti, Magnolia, Spinz), `rap6/808s/` (Vinylz, Cardo, Pharrell) |
 | **Reese bass** | `REGGAETON 4/Reese Bass/Bass @el.obie 1.wav` |
-| **Closed hi-hat** | `FL_Studio/converted/CHat_Downstream07.wav`, `URBANITO/Hats/` |
-| **Open hi-hat** | `FL_Studio/converted/OHat_Downstream05.wav`, `URBANITO/Hats/Hat 21` |
-| **Clap** | `FL_Studio/converted/Clap_Firecracker.wav`, `Metro Boomin/Claps/` |
+| **Closed hi-hat** | `FL_Studio/converted/CHat_Downstream07.wav`, `URBANITO/Hats/`, `rap5/Hats/Closed/`, `rap6/Closed Hats/` |
+| **Open hi-hat** | `FL_Studio/converted/OHat_Downstream05.wav`, `URBANITO/Hats/Hat 21`, `rap5/Hats/Open/`, `rap6/Open Hats/` |
+| **Clap** | `FL_Studio/converted/Clap_Firecracker.wav`, `Metro Boomin/Claps/`, `rap5/Claps/`, `rap6/Claps/` |
+| **Rim shot** | `rap5/Rim/` (60 rims) |
 | **Cencerro / bell** | `reggaetondrums/Percu/Bells & Guiros/NO ME CONOCE_CENCERRO_1.wav` |
 | **Guiro** | `reggaetondrums/Percu/Bells & Guiros/NO ME CONOCE_GUIRO_1.wav` |
 | **Timbales** | `reggaetondrums/Timbales/NO ME CONOCE_TIMBAL_1.wav` |
@@ -319,8 +356,15 @@ Rhodes_4.wav            — FL Rhodes one-shot (~0.55s) ← used in Sola
 | **Kalimba** | `LSTBT_FSMD.../LSTBT_PE1_kalimba_130_Cm_56revefx.wav` |
 | **Tenor sax** | `LSTBT_FSMD.../LSTBT_Tenor_Sax_90_Cm_153.wav` |
 | **Vocal chops** | `Vocalpack/` (key+BPM labeled, Hiskee) |
-| **Cowbell** | `reggaeton5/XXL Percussions/91_Cowbell.wav`, `reggaetondrums/Percu/Bells & Guiros/` |
-| **Shaker** | `reggaeton5/XXL Percussions/` (multiple shakers), `FL_Studio/converted/Shaker_HouseGen03.wav` |
+| **Cowbell** | `reggaeton5/XXL Percussions/91_Cowbell.wav`, `reggaetondrums/Percu/Bells & Guiros/`, `rap6/Percs/Cowbell 01–05`, `rap6/Percs/cardo cowbell 2k17.wav` |
+| **Shaker** | `reggaeton5/XXL Percussions/` (multiple shakers), `FL_Studio/converted/Shaker_HouseGen03.wav`, `rap5/Percs/Shaker/` |
+| **Piano one-shots** | `Piano Sample Pack/`, `rap5/One Shots/Piano/` (71 ProdScope piano one-shots) |
+| **Church bells** | `rap5/One Shots/Church Bells/` |
+| **Bass one-shots** | `rap5/One Shots/Bass/` |
+| **Percs (variety)** | `rap5/Percs/` (camera, clock, hits, scratches, stomps, toms, triangle, zap), `rap6/Percs/` (congas, agogos, triangles, toms) |
+| **Vocal chops (rap)** | `rap6/Vox/` (J Cole chants, Diplo/Noisia), `Vocalpack/` (key+BPM labeled) |
+| **Drum loops** | `rap6/Drum loops/`, `rap6/Perc loops/` |
+| **Vocal presets (FL Studio)** | `rap5/Mixer Presets/Vocal/` — by artist: Carti, Ken Carson, Yeat, SoFayGo, Uzi, Summrs, Pierre Bourne, Hyperpop collection |
 | **Synth presets (VST)** | `Presets/` — Nexus 2 `.fxp` files, DAW only, not Python-loadable |
 
 ---
