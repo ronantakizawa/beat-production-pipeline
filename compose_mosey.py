@@ -63,138 +63,181 @@ def bb(bar, beat=0.0):
 # CHORD PROGRESSIONS & VOICINGS
 # ============================================================================
 
-# Key of C: F -> Am -> Em -> F (bright, soulful)
-# Piano voicings in octave 3-4, harp in octave 4-5, flute in octave 5
+# Key of C: Fmaj7 -> Am7 -> Em7 -> Dm7 (bright, soulful — 7th chords throughout)
+# Inspired by Blueberry Faygo's ii-V-I-VI7 jazz-influenced progression.
+# All voicings use 7ths for warmth. Voice leading: move minimal notes between chords.
 CHORDS_C = {
     'piano': [
-        ['F3', 'A3', 'C4'],     # F major
-        ['A3', 'C4', 'E4'],     # A minor
-        ['E3', 'G3', 'B3'],     # E minor
-        ['F3', 'A3', 'C4'],     # F major (repeat)
+        ['F3', 'A3', 'C4', 'E4'],     # Fmaj7  (IV)
+        ['A3', 'C4', 'E4', 'G4'],     # Am7    (vi)
+        ['E3', 'G3', 'B3', 'D4'],     # Em7    (iii)
+        ['D3', 'F3', 'A3', 'C4'],     # Dm7    (ii) — resolves back to Fmaj7
     ],
     'harp_tones': [
-        ['F4', 'A4', 'C5', 'F5'],   # F major arp targets
-        ['A4', 'C5', 'E5', 'A5'],   # A minor arp targets
-        ['E4', 'G4', 'B4', 'E5'],   # E minor arp targets
-        ['F4', 'A4', 'C5', 'F5'],   # F major arp targets
+        ['F4', 'A4', 'C5', 'E5', 'F5'],   # Fmaj7 arp (includes 7th)
+        ['A4', 'C5', 'E5', 'G5', 'A5'],   # Am7 arp
+        ['E4', 'G4', 'B4', 'D5', 'E5'],   # Em7 arp
+        ['D4', 'F4', 'A4', 'C5', 'D5'],   # Dm7 arp
     ],
-    'flute_tones': [
-        ['C5', 'A5', 'F5'],     # F: chord tones in flute range
-        ['E5', 'C5', 'A4'],     # Am: chord tones
-        ['B4', 'G5', 'E5'],     # Em: chord tones
-        ['C5', 'A5', 'F5'],     # F: chord tones
+    # Melody tones: chord tones + passing tones from C major scale
+    # Each list: [root_5, 3rd_5, 5th_5, 7th, passing_below_root, passing_above_3rd]
+    'melody_tones': [
+        ['F5', 'A5', 'C5', 'E5', 'E5', 'G5'],   # Fmaj7: F A C E + pass E G
+        ['A4', 'C5', 'E5', 'G5', 'G4', 'D5'],   # Am7:   A C E G + pass G D
+        ['E5', 'G5', 'B4', 'D5', 'D5', 'F5'],   # Em7:   E G B D + pass D F
+        ['D5', 'F5', 'A5', 'C5', 'C5', 'E5'],   # Dm7:   D F A C + pass C E
     ],
-    'bass_roots': ['F2', 'A1', 'E2', 'F2'],
-    'glock_accents': ['C6', 'E6', 'B5', 'C6'],
+    'bass_roots': ['F2', 'A1', 'E2', 'D2'],
+    'glock_accents': ['E6', 'G5', 'D6', 'C6'],  # 7th of each chord for shimmer
 }
 
-# Key of G: G -> Em -> C -> D (bouncy, happy)
+# Key of G: Gmaj7 -> Em7 -> Cmaj7 -> D7 (bouncy, happy — dominant 7th on V for tension)
 CHORDS_G = {
     'piano': [
-        ['G3', 'B3', 'D4'],     # G major
-        ['E3', 'G3', 'B3'],     # E minor
-        ['C4', 'E4', 'G4'],     # C major
-        ['D4', 'F#4', 'A4'],    # D major
+        ['G3', 'B3', 'D4', 'F#4'],    # Gmaj7  (I)
+        ['E3', 'G3', 'B3', 'D4'],     # Em7    (vi)
+        ['C4', 'E4', 'G4', 'B4'],     # Cmaj7  (IV)
+        ['D4', 'F#4', 'A4', 'C5'],    # D7     (V7) — dominant tension resolves to I
     ],
     'harp_tones': [
-        ['G4', 'B4', 'D5', 'G5'],   # G major arp
-        ['E4', 'G4', 'B4', 'E5'],   # E minor arp
-        ['C5', 'E5', 'G5', 'C6'],   # C major arp
-        ['D5', 'F#5', 'A5', 'D6'],  # D major arp
+        ['G4', 'B4', 'D5', 'F#5', 'G5'],  # Gmaj7 arp
+        ['E4', 'G4', 'B4', 'D5', 'E5'],   # Em7 arp
+        ['C5', 'E5', 'G5', 'B5', 'C6'],   # Cmaj7 arp
+        ['D5', 'F#5', 'A5', 'C6', 'D6'],  # D7 arp
     ],
-    'flute_tones': [
-        ['D5', 'B5', 'G5'],     # G: chord tones
-        ['B4', 'G5', 'E5'],     # Em: chord tones
-        ['G5', 'E5', 'C5'],     # C: chord tones
-        ['A5', 'F#5', 'D5'],    # D: chord tones
+    'melody_tones': [
+        ['G5', 'B5', 'D5', 'F#5', 'F#5', 'A5'],  # Gmaj7 + pass
+        ['E5', 'G5', 'B4', 'D5', 'D5', 'F#5'],   # Em7 + pass
+        ['C5', 'E5', 'G5', 'B5', 'B4', 'D5'],    # Cmaj7 + pass
+        ['D5', 'F#5', 'A5', 'C6', 'C5', 'E5'],   # D7 + pass
     ],
     'bass_roots': ['G2', 'E2', 'C2', 'D2'],
-    'glock_accents': ['D6', 'B5', 'G5', 'A5'],
+    'glock_accents': ['F#5', 'D6', 'B5', 'C6'],  # 7th of each chord
 }
 
 PROGRESSION = {'C': CHORDS_C, 'G': CHORDS_G}
 
 
 # ============================================================================
-# FLUTE MELODY -- main melody, chord tones + passing notes, C5-C6
+# MARIMBA MELODY -- syncopated, call-and-response, chord tones + passing tones
 # ============================================================================
-# Melody derived from chord tones (per workflow rules).
-# 8th-note based motifs with occasional 16th runs.
+# Techniques from research:
+#   - Syncopation: notes on "and" beats (0.5, 1.5, 2.5, 3.5) for bounce
+#   - Call-and-response: 2-bar call phrase, 2-bar answer with variation
+#   - Passing tones: step-wise movement between chord tones
+#   - Approach notes: half-step below target chord tone for tension/release
+#   - Rhythmic motif: establish a pattern and repeat with pitch variation
+
+# 2-bar rhythmic templates (beat_position, duration)
+# Call: syncopated, ends with space for response
+CALL_RHYTHM = [
+    (0.0, 0.75),    # beat 1, dotted 8th (strong start)
+    (1.5, 0.5),     # "and" of 2 (syncopated)
+    (2.5, 0.5),     # "and" of 3 (syncopated)
+    (3.5, 0.5),     # "and" of 4
+    (4.0, 1.0),     # bar2 beat 1 (anchor)
+    (6.0, 0.5),     # bar2 beat 3
+    (6.5, 0.75),    # bar2 "and" of 3 (syncopated tail)
+]
+
+# Response: answers the call, slightly different rhythm
+RESPONSE_RHYTHM = [
+    (0.5, 0.5),     # bar3 "and" of 1 (pickup — doesn't start on 1)
+    (1.0, 0.75),    # bar3 beat 2
+    (2.5, 0.5),     # bar3 "and" of 3
+    (3.0, 1.0),     # bar3 beat 4 (longer, resolving)
+    (4.5, 0.5),     # bar4 "and" of 1
+    (5.5, 0.5),     # bar4 "and" of 2
+    (6.0, 1.5),     # bar4 beat 3, dotted quarter (resolves)
+]
+
 
 def create_flute(BPM, chords):
     part = stream.Part()
-    part.partName = 'Flute Solo'
+    part.partName = 'African Marimba'
     part.insert(0, tempo.MetronomeMark(number=BPM))
     part.insert(0, meter.TimeSignature('4/4'))
 
-    tones = chords['flute_tones']
+    mt = chords['melody_tones']  # [root, 3rd, 5th, 7th, pass_below, pass_above]
 
-    def flute_phrase(bar, vel_base=52, variation=0):
-        """One-bar melodic phrase built from chord tones."""
-        o = bb(bar)
-        ct = tones[bar % 4]  # chord tones for this bar
-
-        if variation == 0:
-            # Pattern A: descending 8ths — root, 3rd, 5th, rest, 5th, root
-            for i, (pitch, dur) in enumerate([
-                (ct[0], 0.5), (ct[1], 0.5), (ct[2], 1.0),
-                (None, 0.5), (ct[2], 0.5), (ct[0], 1.0),
-            ]):
-                if pitch is not None:
-                    n = note.Note(pitch, quarterLength=dur)
-                    n.volume.velocity = vel_base + random.randint(-4, 4)
-                    part.insert(o + sum(d for _, d in [
-                        (ct[0], 0.5), (ct[1], 0.5), (ct[2], 1.0),
-                        (None, 0.5), (ct[2], 0.5), (ct[0], 1.0),
-                    ][:i]), n)
-        elif variation == 1:
-            # Pattern B: call-and-response — short burst, rest, answer
-            seq = [
-                (ct[2], 0.5), (ct[1], 0.5), (None, 1.0),
-                (ct[0], 0.75), (ct[1], 0.75), (ct[2], 0.5),
-            ]
-            beat = 0.0
-            for pitch, dur in seq:
-                if pitch is not None:
-                    n = note.Note(pitch, quarterLength=dur)
-                    n.volume.velocity = vel_base + random.randint(-4, 4)
-                    part.insert(o + beat, n)
-                beat += dur
+    def _pick_pitch(bar_idx, note_idx, is_response=False):
+        """Select pitch from chord tones + passing tones.
+        Chord tones on strong positions, passing/approach on weak."""
+        ct = mt[bar_idx % 4]
+        # Strong positions: indices 0, 3, 4 in call; 3, 6 in response → chord tones
+        # Weak positions: → passing tones or approach notes
+        if note_idx in (0, 3, 6):
+            # Chord tone: root, 3rd, or 5th
+            return ct[note_idx % 3]
+        elif note_idx in (1, 4):
+            # 7th or passing tone
+            return ct[3] if random.random() < 0.6 else ct[4]
         else:
-            # Pattern C: sustained with pickup — long note, 16th pickup
-            n1 = note.Note(ct[0], quarterLength=2.0)
-            n1.volume.velocity = vel_base + 4
-            part.insert(o, n1)
-            n2 = note.Note(ct[2], quarterLength=0.5)
-            n2.volume.velocity = vel_base - 4
-            part.insert(o + 2.5, n2)
-            n3 = note.Note(ct[1], quarterLength=1.0)
-            n3.volume.velocity = vel_base
-            part.insert(o + 3.0, n3)
+            # Passing tone or approach note (half-step below next chord tone)
+            return ct[5] if random.random() < 0.5 else ct[4]
 
-    # Hook1: flute enters bar 8, full melody
-    for bar in range(HOOK1_S, HOOK1_E):
-        idx = bar - HOOK1_S
-        flute_phrase(bar, vel_base=54, variation=idx % 3)
+    def melody_cycle(start_bar, vel_base=52):
+        """Write a 4-bar call-and-response melodic cycle."""
+        # Bars 0-1: Call
+        o_call = bb(start_bar)
+        call_chord = (start_bar) % 4
+        for i, (beat, dur) in enumerate(CALL_RHYTHM):
+            # Use chord from bar where the note falls
+            bar_offset = int(beat // 4)
+            ci = (start_bar + bar_offset) % 4
+            pitch = _pick_pitch(ci, i, is_response=False)
+            vel = vel_base + random.randint(-4, 4)
+            # Accent syncopated notes slightly
+            if beat != int(beat):
+                vel = min(127, vel + 3)
+            n = note.Note(pitch, quarterLength=dur)
+            n.volume.velocity = vel
+            part.insert(o_call + beat, n)
 
-    # Verse: sparse flute (every other bar)
-    for bar in range(VERSE_S, VERSE_E):
-        if bar % 2 == 0:
-            flute_phrase(bar, vel_base=42, variation=2)
+        # Bars 2-3: Response (same rhythm template, different pitches)
+        o_resp = bb(start_bar + 2)
+        for i, (beat, dur) in enumerate(RESPONSE_RHYTHM):
+            bar_offset = int(beat // 4)
+            ci = (start_bar + 2 + bar_offset) % 4
+            pitch = _pick_pitch(ci, i, is_response=True)
+            vel = vel_base + random.randint(-4, 4)
+            if beat != int(beat):
+                vel = min(127, vel + 3)
+            n = note.Note(pitch, quarterLength=dur)
+            n.volume.velocity = vel
+            part.insert(o_resp + beat, n)
 
-    # Hook2: full melody
-    for bar in range(HOOK2_S, HOOK2_E):
-        idx = bar - HOOK2_S
-        flute_phrase(bar, vel_base=56, variation=idx % 3)
+    # Hook1: melody enters bar 8, 4-bar cycles
+    for cycle_start in range(HOOK1_S, HOOK1_E, 4):
+        melody_cycle(cycle_start, vel_base=52)
 
-    # Bridge: flute prominent
+    # Verse: sparse — only call phrase (no response), every 4 bars
+    for cycle_start in range(VERSE_S, VERSE_E, 4):
+        o = bb(cycle_start)
+        ct = mt[cycle_start % 4]
+        # Sparse: just 3 notes — root, 7th, root (sustained, dreamy)
+        for pitch, beat, dur in [(ct[0], 0.0, 1.5), (ct[3], 2.0, 1.0), (ct[0], 3.5, 0.5)]:
+            n = note.Note(pitch, quarterLength=dur)
+            n.volume.velocity = 42 + random.randint(-3, 3)
+            part.insert(o + beat, n)
+
+    # Hook2: full call-and-response
+    for cycle_start in range(HOOK2_S, HOOK2_E, 4):
+        melody_cycle(cycle_start, vel_base=54)
+
+    # Bridge: prominent melody, single long phrases
     for bar in range(BRIDGE_S, BRIDGE_E):
-        flute_phrase(bar, vel_base=58, variation=bar % 3)
+        o = bb(bar)
+        ct = mt[bar % 4]
+        # Expressive: root held long, passing tone, resolve to 5th
+        for pitch, beat, dur in [(ct[0], 0.0, 2.0), (ct[5], 2.5, 0.5), (ct[2], 3.0, 1.0)]:
+            n = note.Note(pitch, quarterLength=dur)
+            n.volume.velocity = 56 + random.randint(-3, 3)
+            part.insert(o + beat, n)
 
-    # Hook3: full melody
-    for bar in range(HOOK3_S, HOOK3_E):
-        idx = bar - HOOK3_S
-        flute_phrase(bar, vel_base=54, variation=idx % 3)
+    # Hook3: full call-and-response
+    for cycle_start in range(HOOK3_S, HOOK3_E, 4):
+        melody_cycle(cycle_start, vel_base=52)
 
     return part
 
@@ -205,7 +248,7 @@ def create_flute(BPM, chords):
 
 def create_harp(BPM, chords):
     part = stream.Part()
-    part.partName = 'Harp'
+    part.partName = 'Classical Guitar'
     part.insert(0, tempo.MetronomeMark(number=BPM))
 
     tones = chords['harp_tones']
@@ -257,7 +300,7 @@ def create_harp(BPM, chords):
 
 def create_piano(BPM, chords):
     part = stream.Part()
-    part.partName = 'Grand Piano'
+    part.partName = 'Vibraphone'
     part.insert(0, tempo.MetronomeMark(number=BPM))
 
     voicings = chords['piano']
@@ -464,11 +507,11 @@ def insert_program(track, program):
 
 
 GM_PROGRAMS = {
-    'flute':  73,   # Flute
-    'harp':   46,   # Orchestral Harp
-    'piano':  0,    # Acoustic Grand Piano
-    'glock':  9,    # Glockenspiel
-    '808':    38,   # Synth Bass 1
+    'marimba': 12,  # Marimba
+    'guitar':  24,  # Acoustic Guitar (nylon)
+    'vibra':   11,  # Vibraphone
+    'glock':   9,   # Glockenspiel
+    '808':     38,  # Synth Bass 1
 }
 
 
@@ -530,9 +573,9 @@ if __name__ == '__main__':
     print(f'  Key: {args.key}  |  BPM: {BPM}  |  80 bars')
 
     parts = {
-        'flute':       create_flute(BPM, chords),
-        'harp':        create_harp(BPM, chords),
-        'piano':       create_piano(BPM, chords),
+        'marimba':     create_flute(BPM, chords),
+        'guitar':      create_harp(BPM, chords),
+        'vibraphone':  create_piano(BPM, chords),
         'glockenspiel': create_glockenspiel(BPM, chords),
         'drums':       create_drums(BPM),
         '808':         create_808(BPM, chords),

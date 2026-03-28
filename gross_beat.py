@@ -55,8 +55,19 @@ def gb_gate(audio, sr, rate=8, wet=0.5):
     return (audio * (1 - wet) + gated * wet).astype(np.float32)
 
 
+def gb_underwater(audio, sr, cutoff=800, wet=0.85):
+    """Low-pass filter effect — muffled/underwater sound."""
+    from scipy.signal import butter, sosfilt
+    sos = butter(4, cutoff, btype='low', fs=sr, output='sos')
+    filtered = sosfilt(sos, audio).astype(np.float32)
+    return (audio * (1 - wet) + filtered * wet).astype(np.float32)
+
+
 # Default FX pool for transition points
 DEFAULT_FX_POOL = [
+    ('underwater', gb_underwater, {'beat_offset': 0, 'n_beats': 4, 'cutoff': 800}),
+    ('underwater', gb_underwater, {'beat_offset': 0, 'n_beats': 4, 'cutoff': 600}),
+    ('underwater', gb_underwater, {'beat_offset': 0, 'n_beats': 2, 'cutoff': 1000}),
     ('reverse',  gb_reverse,  {'beat_offset': 2, 'n_beats': 2}),
     ('stutter4', gb_stutter,  {'beat_offset': 3, 'n_beats': 1, 'divisions': 4}),
     ('stutter6', gb_stutter,  {'beat_offset': 3, 'n_beats': 1, 'divisions': 6}),

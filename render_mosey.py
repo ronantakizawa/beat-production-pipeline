@@ -8,10 +8,10 @@ MIDI track indices in *_FULL.mid:
   5: drums           6: 808 bass
 
 GarageBand sampler instruments:
-  Flute Solo   -> /Apple GarageBand Sampler/Flute Solo/Flute_LV_na_sus_mf/
-  Harp         -> /Apple GarageBand Sampler/Harp/Harp_ES_mf/
-  Grand Piano  -> /Apple GarageBand Sampler/Grand Piano/
-  Glockenspiel -> /Apple GarageBand Sampler/Glockenspiel/Glockenspiel_Pla_mf1/
+  African Marimba     -> /Apple GarageBand Sampler/African Marimba/  (main melody — bright, percussive)
+  Classical Ac Guitar  -> /Apple GarageBand Sampler/Classical Acoustic Guitar/  (plucked arp — tropical)
+  Vibraphone          -> /Apple GarageBand Sampler/Vibraphone/  (counter melody — warm bells)
+  Glockenspiel        -> /Apple GarageBand Sampler/Glockenspiel/Glockenspiel_Pla_mf1/  (sparkle accents)
 
 Usage:
   python render_mosey.py --midi Mosey_Happy_FULL.mid --name "Mosey_Happy" --bpm 140
@@ -165,32 +165,72 @@ def stereo_widen(buf, delay_ms=12):
 # GARAGEBAND SAMPLER LOADER
 # ============================================================================
 
-def scan_sampler_dir(instrument_dir):
-    """Scan a GarageBand sampler directory and return {midi_note: wav_path}."""
+def _parse_note_from_filename(f):
+    """Try to extract a MIDI note number from a GarageBand sample filename.
+    Handles multiple naming conventions:
+      - FL1_sus_mf_A#4.wav / HA_ES_mf_C4.wav (note at end after _)
+      - 072_C4KM56_H.wav (MIDI number prefix)
+      - 50A-1GA1-C3.aif (guitar: note after last -)
+      - YTVibraphoneXA2 (vibraphone: note after X, no extension)
+      - Marimba ln mf l1x  5 f.aif (marimba: octave + lowercase note at end)
+      - GLS2_Pla_mf_E7.wav (glockenspiel)
+    """
+    # Skip pedal noise, strum effects
+    if 'ped' in f.lower() or '50A-2G' in f:
+        return None
+
+    # Pattern 1: _[NOTE][OCTAVE].(wav|aif) — flute, harp, glockenspiel
+    m = re.search(r'_([A-G]#?\d+)\.(wav|aif)$', f, re.IGNORECASE)
+    if m:
+        return note_name_to_midi(m.group(1))
+
+    # Pattern 2: 3-digit MIDI prefix — piano
+    m = re.match(r'^(\d{3})_', f)
+    if m:
+        return int(m.group(1))
+
+    # Pattern 3: -[NOTE][OCTAVE].(wav|aif) — guitar (50A-1GA1-C3.aif)
+    m = re.search(r'-([A-G]#?\d+)\.(wav|aif)$', f, re.IGNORECASE)
+    if m:
+        return note_name_to_midi(m.group(1))
+
+    # Pattern 4: X[NOTE][OCTAVE]$ — vibraphone (no extension, e.g. YTVibraphoneXA2)
+    m = re.search(r'X([A-G]#?\d+)$', f)
+    if m:
+        return note_name_to_midi(m.group(1))
+
+    # Pattern 5: [OCTAVE]\s*[note_letter].(aif|wav) — marimba (e.g. "5 f.aif", "3a.aif")
+    # Note letters: a=A, b=B, d=D, f=F (lowercase in filename)
+    m = re.search(r'(\d)\s*([a-g])\.(aif|wav)$', f, re.IGNORECASE)
+    if m:
+        note_letter = m.group(2).upper()
+        octave = int(m.group(1))
+        return note_name_to_midi(f'{note_letter}{octave}')
+
+    return None
+
+
+def scan_sampler_dir(instrument_dir, prefer_velocity=None):
+    """Scan a GarageBand sampler directory and return {midi_note: path}.
+    Handles .wav, .aif, and extensionless AIFF files.
+    prefer_velocity: optional substring to prefer (e.g. 'mf', 'GA1') when
+    multiple velocity layers exist for the same note."""
     samples = {}
     for root, dirs, files in os.walk(instrument_dir):
         for f in files:
-            if not f.lower().endswith('.wav'):
+            fl = f.lower()
+            # Accept .wav, .aif, and extensionless files
+            if not (fl.endswith('.wav') or fl.endswith('.aif') or '.' not in f):
                 continue
             full_path = os.path.join(root, f)
-
-            # Pattern 1: note name at end of filename — e.g. FL1_sus_mf_A#4.wav
-            m = re.search(r'_([A-G]#?\d+)\.wav$', f, re.IGNORECASE)
-            if m:
-                midi = note_name_to_midi(m.group(1))
-                if midi is not None:
-                    samples[midi] = full_path
+            midi = _parse_note_from_filename(f)
+            if midi is None:
                 continue
-
-            # Pattern 2: MIDI number prefix — e.g. 072_C4KM56_H.wav
-            m2 = re.match(r'^(\d{3})_', f)
-            if m2:
-                # Skip pedal noise files
-                if 'ped' in f.lower():
-                    continue
-                midi = int(m2.group(1))
-                if midi not in samples:  # prefer first match (usually Hard velocity)
-                    samples[midi] = full_path
+            # Prefer specific velocity layer if requested
+            if midi in samples and prefer_velocity and prefer_velocity in f:
+                samples[midi] = full_path
+            elif midi not in samples:
+                samples[midi] = full_path
     return samples
 
 
@@ -444,13 +484,14 @@ def build_808(bass_notes, kit, sc_gain, NSAMP, BEAT, BAR_DUR, rng):
 # ============================================================================
 
 def build_sampler_track(name, instrument_dir, track_notes, sc_gain, NSAMP, BEAT,
-                        effects_board, mix_gain=0.40, widen_ms=0, rng=None):
+                        effects_board, mix_gain=0.40, widen_ms=0, rng=None,
+                        prefer_velocity=None):
     """Render a melodic track using GarageBand sampler WAVs."""
     print(f'\n  Building {name} ...')
     if rng is None:
         rng = np.random.RandomState(42)
 
-    sample_map = scan_sampler_dir(instrument_dir)
+    sample_map = scan_sampler_dir(instrument_dir, prefer_velocity=prefer_velocity)
     if not sample_map:
         print(f'    WARNING: No samples found in {instrument_dir}')
         return np.zeros((NSAMP, 2), dtype=np.float32)
@@ -779,61 +820,63 @@ if __name__ == '__main__':
     # Step 5: Melodic instruments
     print('\nStep 5: Building melodic instruments ...')
 
-    # Flute Solo (track 1) — main melody, reverb, widened
-    flute_notes = parse_track(FIXED_MID, 1)
-    flute_notes = humanize_notes(flute_notes, timing_ms=8, vel_range=4, rng=rng)
-    flute_board = pb.Pedalboard([
-        pb.HighpassFilter(cutoff_frequency_hz=200),
-        pb.LowpassFilter(cutoff_frequency_hz=12000),
-        pb.Reverb(room_size=0.65, damping=0.30, wet_level=0.35,
-                  dry_level=0.80, width=0.90),
-        pb.Compressor(threshold_db=-14, ratio=2.5, attack_ms=6, release_ms=150),
-        pb.Gain(gain_db=0.5),
+    # African Marimba (track 1) — main melody, bright percussive, music-box vibe
+    melody_notes = parse_track(FIXED_MID, 1)
+    melody_notes = humanize_notes(melody_notes, timing_ms=8, vel_range=4, rng=rng)
+    marimba_board = pb.Pedalboard([
+        pb.HighpassFilter(cutoff_frequency_hz=250),
+        pb.LowpassFilter(cutoff_frequency_hz=14000),
+        pb.Reverb(room_size=0.55, damping=0.30, wet_level=0.30,
+                  dry_level=0.82, width=0.88),
+        pb.Compressor(threshold_db=-14, ratio=2.5, attack_ms=4, release_ms=120),
+        pb.Gain(gain_db=1.0),
         pb.Limiter(threshold_db=-3.0),
     ])
-    flute_buf = build_sampler_track(
-        'Flute Solo',
-        os.path.join(GB_SAMPLER, 'Flute Solo', 'Flute_LV_na_sus_mf'),
-        flute_notes, sc_gain, NSAMP, BEAT, flute_board,
-        mix_gain=0.50, widen_ms=14, rng=rng)
+    marimba_buf = build_sampler_track(
+        'African Marimba',
+        os.path.join(GB_SAMPLER, 'African Marimba'),
+        melody_notes, sc_gain, NSAMP, BEAT, marimba_board,
+        mix_gain=0.50, widen_ms=14, rng=rng,
+        prefer_velocity='mf l1x')
 
-    # Harp (track 2) — 16th arp, bright, widened
-    harp_notes = parse_track(FIXED_MID, 2)
-    harp_notes = humanize_notes(harp_notes, timing_ms=6, vel_range=3, rng=rng)
-    harp_board = pb.Pedalboard([
-        pb.HighpassFilter(cutoff_frequency_hz=180),
-        pb.LowpassFilter(cutoff_frequency_hz=14000),
-        pb.Reverb(room_size=0.55, damping=0.35, wet_level=0.30,
-                  dry_level=0.82, width=0.85),
+    # Classical Acoustic Guitar (track 2) — plucked arp, tropical bounce
+    arp_notes = parse_track(FIXED_MID, 2)
+    arp_notes = humanize_notes(arp_notes, timing_ms=6, vel_range=3, rng=rng)
+    guitar_board = pb.Pedalboard([
+        pb.HighpassFilter(cutoff_frequency_hz=200),
+        pb.LowpassFilter(cutoff_frequency_hz=12000),
+        pb.Reverb(room_size=0.50, damping=0.35, wet_level=0.28,
+                  dry_level=0.84, width=0.85),
         pb.Compressor(threshold_db=-14, ratio=2.0, attack_ms=4, release_ms=120),
         pb.Gain(gain_db=0.5),
         pb.Limiter(threshold_db=-3.0),
     ])
-    harp_buf = build_sampler_track(
-        'Harp',
-        os.path.join(GB_SAMPLER, 'Harp', 'Harp_ES_mf'),
-        harp_notes, sc_gain, NSAMP, BEAT, harp_board,
-        mix_gain=0.40, widen_ms=18, rng=rng)
+    guitar_buf = build_sampler_track(
+        'Classical Guitar',
+        os.path.join(GB_SAMPLER, 'Classical Acoustic Guitar'),
+        arp_notes, sc_gain, NSAMP, BEAT, guitar_board,
+        mix_gain=0.40, widen_ms=18, rng=rng,
+        prefer_velocity='GA1')
 
-    # Grand Piano (track 3) — sustained chords, quiet, centered
-    piano_notes = parse_track(FIXED_MID, 3)
-    piano_notes = humanize_notes(piano_notes, timing_ms=6, vel_range=3, rng=rng)
-    piano_board = pb.Pedalboard([
-        pb.HighpassFilter(cutoff_frequency_hz=150),
-        pb.LowpassFilter(cutoff_frequency_hz=8000),
-        pb.Reverb(room_size=0.50, damping=0.40, wet_level=0.25,
-                  dry_level=0.85, width=0.75),
+    # Vibraphone (track 3) — warm bell pad, counter melody
+    pad_notes = parse_track(FIXED_MID, 3)
+    pad_notes = humanize_notes(pad_notes, timing_ms=6, vel_range=3, rng=rng)
+    vibe_board = pb.Pedalboard([
+        pb.HighpassFilter(cutoff_frequency_hz=180),
+        pb.LowpassFilter(cutoff_frequency_hz=10000),
+        pb.Reverb(room_size=0.62, damping=0.35, wet_level=0.35,
+                  dry_level=0.78, width=0.80),
         pb.Compressor(threshold_db=-14, ratio=2.0, attack_ms=6, release_ms=180),
         pb.Gain(gain_db=0.5),
         pb.Limiter(threshold_db=-3.0),
     ])
-    piano_buf = build_sampler_track(
-        'Grand Piano',
-        os.path.join(GB_SAMPLER, 'Grand Piano'),
-        piano_notes, sc_gain, NSAMP, BEAT, piano_board,
+    vibe_buf = build_sampler_track(
+        'Vibraphone',
+        os.path.join(GB_SAMPLER, 'Vibraphone'),
+        pad_notes, sc_gain, NSAMP, BEAT, vibe_board,
         mix_gain=0.35, widen_ms=10, rng=rng)
 
-    # Glockenspiel (track 4) — bell accents, bright, widened
+    # Glockenspiel (track 4) — sparkle accents on hook downbeats
     glock_notes = parse_track(FIXED_MID, 4)
     glock_notes = humanize_notes(glock_notes, timing_ms=4, vel_range=2, rng=rng)
     glock_board = pb.Pedalboard([
@@ -857,12 +900,12 @@ if __name__ == '__main__':
     # Mix — (buf, coeff, stereo_mode, stereo_param)
     # Centered: kick, 808. Widened: melodies. Stereo: hats (handled in drum build)
     mix = mix_stems([
-        (drum_stereo, 0.65, 'center', 0),      # drums
-        (bass_buf,    0.55, 'center', 0),       # 808 centered
-        (flute_buf,   0.42, 'widen',  14),      # flute — main melody, prominent
-        (harp_buf,    0.30, 'widen',  18),      # harp — arp, behind flute
-        (piano_buf,   0.25, 'widen',  10),      # piano — quiet bed
-        (glock_buf,   0.20, 'widen',  16),      # glock — accents
+        (drum_stereo,  0.65, 'center', 0),      # drums
+        (bass_buf,     0.55, 'center', 0),      # 808 centered
+        (marimba_buf,  0.42, 'widen',  14),     # marimba — main melody
+        (guitar_buf,   0.30, 'widen',  18),     # guitar — plucked arp
+        (vibe_buf,     0.25, 'widen',  10),     # vibraphone — warm pad
+        (glock_buf,    0.20, 'widen',  16),     # glock — sparkle accents
         (fx_buf,      0.30, 'center', 0),       # FX
     ], NSAMP)
 

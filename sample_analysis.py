@@ -86,6 +86,69 @@ def analyze_sample_character(audio, sr=SR):
     }
 
 
+def detect_vocals(audio, sr=SR):
+    """Detect whether a sample contains vocals/speech/singing.
+
+    Uses Demucs (Meta's source separation model) to extract the vocal
+    stem, then measures its energy relative to the full mix. If the
+    vocal stem has significant energy, the sample has vocals.
+
+    This is the gold standard — Demucs literally separates the voice
+    from the instruments. No heuristics needed.
+
+    Returns: (has_vocals: bool, confidence: float 0-1)
+    """
+    import torch
+    import torchaudio
+    from demucs.pretrained import get_model
+    from demucs.apply import apply_model
+
+    # Load model once
+    model = get_model('htdemucs')
+    model.eval()
+    model_sr = model.samplerate
+
+    # Sample 3 positions (25%, 50%, 75%) — 15s each
+    chunk_dur = 15  # seconds
+    chunk_samples = min(len(audio), int(chunk_dur * sr))
+    positions = [0.15, 0.35, 0.55, 0.75] if len(audio) > chunk_samples * 3 else [0.50]
+
+    best_vocal_ratio = 0.0
+
+    for pos_frac in positions:
+        start = max(0, int(len(audio) * pos_frac) - chunk_samples // 2)
+        start = min(start, max(0, len(audio) - chunk_samples))
+        chunk = audio[start:start + chunk_samples]
+
+        # Resample if needed
+        if sr != model_sr:
+            chunk_tensor = torch.from_numpy(chunk).float().unsqueeze(0)
+            chunk = torchaudio.functional.resample(chunk_tensor, sr, model_sr).squeeze(0).numpy()
+
+        # Stereo (batch=1, channels=2, samples)
+        waveform = torch.from_numpy(np.stack([chunk, chunk])).float().unsqueeze(0)
+
+        with torch.no_grad():
+            sources = apply_model(model, waveform, device='cpu')
+
+        # htdemucs sources: drums=0, bass=1, other=2, vocals=3
+        vocals = sources[0, 3].numpy()
+        full_mix = waveform[0].numpy()
+
+        vocal_rms = float(np.sqrt(np.mean(vocals ** 2)))
+        mix_rms = float(np.sqrt(np.mean(full_mix ** 2))) + 1e-9
+        vocal_ratio = vocal_rms / mix_rms
+        best_vocal_ratio = max(best_vocal_ratio, vocal_ratio)
+
+    # vocal_ratio > 0.15 = vocals present
+    # Pure instrumentals: ratio < 0.08
+    # Songs with vocals: ratio 0.20-0.60
+    confidence = min(1.0, max(0.0, (best_vocal_ratio - 0.08) / 0.25))
+    has_vocals = best_vocal_ratio > 0.15
+
+    return has_vocals, confidence
+
+
 def detect_sample_tempo(audio, sr=SR, target_bpm=90.0, bpm_range=(70, 200)):
     """Detect tempo using madmom (primary) + librosa (fallback).
     Applies half/double compensation toward target BPM."""
@@ -245,13 +308,43 @@ def _beat_features(audio, sr, beats_sec, hop=512):
     return feats
 
 
+def _score_loop_quality(audio, sr):
+    """Score a loop candidate's musical quality (0-1).
+    Harmonic richness (0.4) + rhythmic interest (0.3) + consistency (0.3)."""
+    if len(audio) < sr * 0.5:
+        return 0.0
+
+    # Harmonic richness: mean chroma peak magnitude (tonal content)
+    chroma = librosa.feature.chroma_cqt(y=audio, sr=sr, hop_length=512)
+    harmonic = float(chroma.max(axis=0).mean())  # 0-1 range naturally
+
+    # Rhythmic interest: onset rate (sweet spot 2-8 per second)
+    onsets = librosa.onset.onset_detect(y=audio, sr=sr, units='time')
+    dur = len(audio) / sr
+    rate = len(onsets) / dur if dur > 0 else 0
+    if rate < 0.5:
+        rhythm = 0.1  # too static
+    elif rate <= 8.0:
+        rhythm = min(1.0, rate / 5.0)  # sweet spot
+    else:
+        rhythm = max(0.2, 1.0 - (rate - 8.0) / 10.0)  # too noisy
+
+    # Consistency: RMS coefficient of variation (low = steady, high = gaps)
+    rms = librosa.feature.rms(y=audio, hop_length=512)[0]
+    rms_mean = float(rms.mean()) + 1e-9
+    rms_cv = float(rms.std()) / rms_mean
+    consistency = max(0.0, 1.0 - rms_cv)  # CV of 0 = perfect, CV of 1+ = bad
+
+    return harmonic * 0.4 + rhythm * 0.3 + consistency * 0.3
+
+
 def _find_loop_pairs(beats_sec, beat_feats, target_bars, target_bpm,
-                     bar_tolerance=0.15, top_n=10):
+                     bar_tolerance=0.15, top_n=10, raw_audio=None, sr=SR):
     """Find beat pairs whose gap = target_bars at target_bpm with minimal
-    feature distance. Returns list of (distance, start_beat_idx, end_beat_idx)."""
+    feature distance + musical quality. Returns list of (score, start_beat_idx, end_beat_idx)."""
     beat_dur = 60.0 / target_bpm
     target_dur = target_bars * 4 * beat_dur
-    tol = target_dur * bar_tolerance  # allow ±15% length tolerance
+    tol = target_dur * bar_tolerance
 
     n = len(beats_sec)
     pairs = []
@@ -261,14 +354,27 @@ def _find_loop_pairs(beats_sec, beat_feats, target_bars, target_bpm,
             if gap < target_dur - tol:
                 continue
             if gap > target_dur + tol:
-                break  # beats are sorted, no point continuing
-            # L1 distance between feature vectors at loop start/end
-            dist = float(np.sum(np.abs(beat_feats[i] - beat_feats[j])))
-            # Penalize segments with low energy (average RMS feature across beats)
+                break
+            # L1 distance (seamlessness) — lower = better loop boundary
+            l1_dist = float(np.sum(np.abs(beat_feats[i] - beat_feats[j])))
+
+            # Musical quality score — higher = better content
+            quality = 0.5  # default if no audio
+            if raw_audio is not None:
+                seg_start = int(beats_sec[i] * sr)
+                seg_end = int(beats_sec[j] * sr)
+                if seg_end <= len(raw_audio):
+                    segment = raw_audio[seg_start:seg_end]
+                    quality = _score_loop_quality(segment, sr)
+
+            # Combined score: balance seamlessness with quality
+            score = l1_dist * 0.5 + (1.0 - quality) * 3.0
+
+            # Energy penalty for quiet segments
             seg_rms = beat_feats[i:j+1, -1].mean()
             if seg_rms < 0.1:
-                dist += 5.0  # penalty for quiet segments
-            pairs.append((dist, i, j))
+                score += 5.0
+            pairs.append((score, i, j))
 
     pairs.sort(key=lambda x: x[0])
     return pairs[:top_n]
@@ -442,7 +548,7 @@ def extract_loop_auto(raw_sample, sr=SR, target_bpm=None):
     best_n_bars = 4
     for try_bars in [4, 2, 8]:
         pairs = _find_loop_pairs(beats_sec, beat_feats, try_bars, detected_bpm,
-                                  bar_tolerance=0.15)
+                                  bar_tolerance=0.15, raw_audio=raw_sample, sr=sr)
         if pairs:
             print(f'    {try_bars}-bar candidates: {len(pairs)} '
                   f'(best dist={pairs[0][0]:.3f})')
@@ -454,7 +560,7 @@ def extract_loop_auto(raw_sample, sr=SR, target_bpm=None):
         # Relax tolerance
         for try_bars in [4, 2]:
             pairs = _find_loop_pairs(beats_sec, beat_feats, try_bars, detected_bpm,
-                                      bar_tolerance=0.30)
+                                      bar_tolerance=0.30, raw_audio=raw_sample, sr=sr)
             if pairs:
                 best_pairs = pairs
                 best_n_bars = try_bars
@@ -496,3 +602,92 @@ def extract_loop_auto(raw_sample, sr=SR, target_bpm=None):
     print(f'  Selected: {beats_sec[bi]:.2f}s ({actual_dur:.2f}s, {n_bars} bars, '
           f'{detected_bpm:.1f} BPM)')
     return loop, n_bars
+
+
+def detect_and_align_loop(loop, sr=SR, bpm_range=(70, 200), bpm_hint=None, vinyl_mode=False):
+    """Detect loop BPM, compute bar count, and align/stretch to clean bars.
+
+    Consolidated function that handles all edge cases:
+    - Beat tracking failure → fallback to bpm_hint or range midpoint
+    - BPM outside genre range → stretch to hint (vinyl_mode uses resample)
+    - Non-integer bar count → time-stretch to nearest integer bars
+    - Zero-division guards
+
+    Args:
+        loop: mono audio array
+        sr: sample rate
+        bpm_range: (lo, hi) tuple for genre
+        bpm_hint: target BPM (from --bpm or genre default)
+        vinyl_mode: if True, uses resampling (pitch+speed linked) instead of
+                    phase vocoder time-stretch
+
+    Returns: (aligned_loop, bpm, n_bars)
+    """
+    from scipy.signal import resample as scipy_resample
+
+    lo, hi = bpm_range
+    loop_dur = len(loop) / sr
+
+    # Step 1: Beat-track the loop
+    tempo_arr = librosa.beat.beat_track(y=loop, sr=sr)
+    loop_bpm_raw = float(np.atleast_1d(tempo_arr[0])[0]) if hasattr(tempo_arr[0], '__len__') else float(tempo_arr[0])
+
+    # Step 2: Fallback if beat tracking fails
+    if loop_bpm_raw < 1:
+        loop_bpm_raw = bpm_hint if bpm_hint else (lo + hi) / 2
+        print(f'  Beat tracking failed, using {loop_bpm_raw:.0f} BPM fallback')
+
+    # Step 3: Adjust to genre range (1x, 0.5x, 2x)
+    loop_bpm = loop_bpm_raw
+    in_range = False
+    for mult in [1.0, 0.5, 2.0]:
+        adj = loop_bpm_raw * mult
+        if lo <= adj <= hi:
+            loop_bpm = adj
+            in_range = True
+            break
+
+    # Step 4: Compute bar count
+    bar_dur = 60.0 / loop_bpm * 4
+    if bar_dur < 0.1:
+        bar_dur = 60.0 / ((lo + hi) / 2) * 4
+    n_bars = max(1, round(loop_dur / bar_dur))
+
+    # Step 5/6: Align to clean bars
+    if in_range:
+        # In genre range — time-stretch to align cleanly to N bars
+        target_dur = n_bars * bar_dur
+        stretch_ratio = abs(loop_dur - target_dur) / loop_dur if loop_dur > 0 else 0
+        if stretch_ratio > 0.01:
+            if vinyl_mode:
+                new_len = int(len(loop) * (loop_dur / target_dur))
+                loop = scipy_resample(loop, new_len).astype(np.float32)
+                print(f'  Vinyl-aligned: {loop_dur:.2f}s → {target_dur:.2f}s ({n_bars} bars at {loop_bpm:.1f} BPM)')
+            else:
+                loop = librosa.effects.time_stretch(loop, rate=loop_dur / target_dur).astype(np.float32)
+                print(f'  Time-aligned: {loop_dur:.2f}s → {target_dur:.2f}s ({n_bars} bars at {loop_bpm:.1f} BPM)')
+            loop_dur = len(loop) / sr
+        bpm = loop_bpm
+    else:
+        # Out of genre range — stretch to bpm_hint
+        target_bpm = bpm_hint if bpm_hint else (lo + hi) / 2
+        target_bar_dur = 60.0 / target_bpm * 4
+        target_dur = n_bars * target_bar_dur
+        if loop_dur > 0 and target_dur > 0:
+            if vinyl_mode:
+                # Resample = pitch + speed linked (vinyl slowdown)
+                new_len = int(len(loop) * (target_dur / loop_dur))
+                loop = scipy_resample(loop, new_len).astype(np.float32)
+                print(f'  Vinyl-stretched: {loop_bpm:.1f} → {target_bpm:.1f} BPM ({n_bars} bars, pitch shifted)')
+            else:
+                loop = librosa.effects.time_stretch(loop, rate=loop_dur / target_dur).astype(np.float32)
+                print(f'  Time-stretched: {loop_bpm:.1f} → {target_bpm:.1f} BPM ({n_bars} bars)')
+            loop_dur = len(loop) / sr
+        bpm = target_bpm
+
+    # Recompute bar count from final loop
+    final_bar_dur = 60.0 / bpm * 4
+    n_bars = max(1, round(loop_dur / final_bar_dur)) if final_bar_dur > 0 else 1
+
+    print(f'  Loop BPM (beat-tracked): {loop_bpm_raw:.1f} | Final: {bpm:.1f} BPM, {n_bars} bars')
+    return loop, bpm, n_bars

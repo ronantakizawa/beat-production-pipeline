@@ -36,8 +36,10 @@ from audio_utils import (load_sample, place, apply_pb, bar_to_s, stereo_widen,
                          adaptive_hpf, add_metronome)
 from sample_analysis import (analyze_sample_character, detect_sample_tempo,
                              detect_sample_key, detect_loop_period,
-                             extract_loop_auto, extract_loop_at)
+                             extract_loop_auto, extract_loop_at,
+                             detect_vocals, detect_and_align_loop)
 from gross_beat import apply_gross_beat
+from drum_gen import get_drum_patterns
 from mix_master import mix_analysis, get_version
 from chord_detect import detect_chords, chords_to_bass_pattern
 from lofi_fx import (lofi_process, vinyl_noise, vinyl_crackle,
@@ -47,6 +49,18 @@ SR = 44100
 INSTR = '/Users/ronantakizawa/Documents/instruments'
 
 # =============================================================================
+# Bass Patterns — (semitone_offset_from_root, beat_position)
+# =============================================================================
+BASS_PATTERNS = {
+    'root_only':   [(0, 0.0)],
+    'root_octave': [(0, 0.0), (12, 2.0)],
+    'four_pulse':  [(0, 0.0), (0, 1.0), (0, 2.0), (0, 3.0)],
+    'bounce':      [(0, 0.0), (7, 2.5)],
+    'walking':     [(0, 0.0), (4, 1.0), (7, 2.0), (12, 3.0)],
+    'drill_slide': [(0, 0.0), (0, 1.0), (7, 2.0)],
+}
+
+# =============================================================================
 # Genre Configs (inline, not JSON)
 # =============================================================================
 
@@ -54,19 +68,15 @@ GENRE_CONFIGS = {
     'trap': {
         'bpm_default': 148, 'bpm_range': (120, 165), 'bars': 96,
         'jitter_ms': 4,
-        'kick_beats': [0, 2], 'kick_ghost': 3.5, 'kick_ghost_pct': 0.25, 'kick_gain': 1.0,
-        'snare_beats': [2], 'snare_ghost_pct': 0.35, 'snare_gain': 0.65,
         'clap_layer': True, 'clap_gain': 0.45,
-        'hat_pattern': '16th_rolling', 'hat_gain': 0.38, 'hat_32nd_rolls': True,
-        'ride': False,
-        'bass_type': '808', 'bass_lpf': 1200, 'bass_gain_db': 3.0,
-        'bass_comp': (-10, 4.0, 2, 80),
-        'mix': {'drums': 0.70, 'bass': 0.80, 'sample': 0.40, 'perc': 0.15, 'fx': 0.22, 'vinyl': 0.0},
+        'bass_type': '808', 'bass_lpf': 900, 'bass_gain_db': 0.0,
+        'bass_comp': (-12, 4.0, 2, 80),
+        'mix': {'drums': 0.50, 'bass': 0.30, 'sample': 0.65, 'perc': 0.08, 'fx': 0.22, 'vinyl': 0.0},
         'sc_depth': 0.75,
-        'master': {'hpf': 25, 'lpf': 18000, 'comp_thresh': -14, 'comp_ratio': 2.0},
-        'sample_hpf': (150, 220),
+        'master': {'hpf': 30, 'lpf': 18000, 'comp_thresh': -10, 'comp_ratio': 3.0},
+        'sample_hpf': (100, 160),
         'arrangement': [
-            ('intro', 0, 8, False, 'lpf_sweep_up'),
+            ('intro', 0, 8, False, 'full'),
             ('hook1', 8, 24, True, 'full'),
             ('verse', 24, 40, True, 'slight_lpf'),
             ('hook2', 40, 56, True, 'full'),
@@ -76,67 +86,138 @@ GENRE_CONFIGS = {
         ],
         'lofi': False, 'drum_break': False,
         'room': (5.0, 4.0, 3.5, 0.35, 2, 0.15, 0.06),
+        'bass_pattern_type': 'bounce',
         'album': 'Trap Beats', 'genre_tag': 'Trap',
     },
     'boombap': {
-        'bpm_default': 90, 'bpm_range': (70, 110), 'bars': 64,
+        'bpm_default': 85, 'bpm_range': (70, 100), 'bars': 64,
         'jitter_ms': 20,
-        'kick_beats': [0, 2], 'kick_ghost': 3.5, 'kick_ghost_pct': 0.30, 'kick_gain': 0.70,
-        'snare_beats': [1, 3], 'snare_ghost_pct': 0.40, 'snare_gain': 0.60,
         'clap_layer': False, 'clap_gain': 0.0,
-        'hat_pattern': '8th', 'hat_gain': 0.30, 'hat_32nd_rolls': False,
-        'ride': False,
-        'bass_type': 'sine_sub', 'bass_lpf': 200, 'bass_gain_db': 3.0,
+        'bass_type': 'sine_sub', 'bass_lpf': 200, 'bass_gain_db': 0.0,
         'bass_comp': (-12, 3.0, 5, 100),
-        'mix': {'drums': 0.75, 'bass': 0.55, 'sample': 0.45, 'perc': 0.12, 'fx': 0.0, 'vinyl': 0.03},
+        'mix': {'drums': 0.75, 'bass': 0.30, 'sample': 0.70, 'perc': 0.12, 'fx': 0.0, 'vinyl': 0.03},
         'sc_depth': 0.60,
         'master': {'hpf': 30, 'lpf': 16000, 'comp_thresh': -12, 'comp_ratio': 2.5},
         'sample_hpf': (120, 200),
         'arrangement': [
-            ('intro', 0, 8, False, 'lpf_sweep_up'),
+            ('intro', 0, 8, False, 'full'),
             ('hook1', 8, 24, True, 'full'),
             ('verse', 24, 40, True, 'slight_lpf'),
             ('hook2', 40, 56, True, 'full'),
             ('outro', 56, 64, False, 'lpf_sink'),
         ],
-        'lofi': True, 'lofi_intensity': 0.5, 'drum_break': True,
+        'lofi': True, 'lofi_intensity': 0.5, 'drum_break': False,
         'room': (6.0, 5.0, 3.0, 0.25, 3, 0.25, 0.12),
+        'bass_pattern_type': 'root_octave',
         'album': 'Old School Beats', 'genre_tag': 'Hip-Hop',
     },
     'jazzhouse': {
-        'bpm_default': 122, 'bpm_range': (115, 130), 'bars': 80,
-        'jitter_ms': 3,
-        'kick_beats': [0, 1, 2, 3], 'kick_ghost': None, 'kick_ghost_pct': 0.0, 'kick_gain': 0.55,
-        'snare_beats': [1, 3], 'snare_ghost_pct': 0.30, 'snare_gain': 0.40,
-        'clap_layer': False, 'clap_gain': 0.0,
-        'hat_pattern': '16th_quiet', 'hat_gain': 0.13, 'hat_32nd_rolls': False,
-        'ride': True, 'ride_gain': 0.18,
-        'bass_type': 'sine_sub', 'bass_lpf': 180, 'bass_gain_db': 2.0,
+        'bpm_default': 128, 'bpm_range': (115, 135), 'bars': 80,
+        'jitter_ms': 5,
+        'clap_layer': True, 'clap_gain': 0.35,
+        'bass_type': 'sine_sub', 'bass_lpf': 180, 'bass_gain_db': 0.0,
         'bass_comp': (-14, 2.5, 8, 120),
-        'mix': {'drums': 0.65, 'bass': 0.15, 'sample': 0.50, 'perc': 0.0, 'fx': 0.0, 'vinyl': 0.02},
-        'sc_depth': 0.40,
+        'mix': {'drums': 0.65, 'bass': 0.15, 'sample': 0.40, 'perc': 0.00, 'fx': 0.0, 'vinyl': 0.02},
+        'sc_depth': 0.70,
         'master': {'hpf': 25, 'lpf': 18000, 'comp_thresh': -14, 'comp_ratio': 2.0},
         'sample_hpf': (100, 180),
         'arrangement': [
-            ('intro', 0, 8, False, 'lpf_sweep_up'),
-            ('laid_back1', 8, 24, False, 'full'),
-            ('upbeat1', 24, 40, True, 'full'),
-            ('laid_back2', 40, 48, False, 'slight_lpf'),
-            ('upbeat2', 48, 64, True, 'full'),
+            ('intro', 0, 8, False, 'full'),
+            ('groove1', 8, 24, True, 'full'),
+            ('break1', 24, 28, False, 'underwater'),
+            ('groove2', 28, 44, True, 'full'),
+            ('break2', 44, 48, False, 'underwater'),
+            ('groove3', 48, 64, True, 'full'),
             ('outro', 64, 80, False, 'lpf_sink'),
         ],
         'lofi': False, 'drum_break': False,
         'room': (8.0, 6.0, 3.5, 0.20, 4, 0.40, 0.15),
+        'bass_pattern_type': 'four_pulse',
         'album': 'Jazz House Beats', 'genre_tag': 'House',
+    },
+    'progressive_house': {
+        'bpm_default': 128, 'bpm_range': (118, 135), 'bars': 96,
+        'jitter_ms': 3,
+        'clap_layer': True, 'clap_gain': 0.30,
+        'bass_type': 'sine_sub', 'bass_lpf': 180, 'bass_gain_db': 0.0,
+        'bass_comp': (-14, 2.5, 8, 120),
+        'mix': {'drums': 0.70, 'bass': 0.15, 'sample': 0.45, 'perc': 0.0, 'fx': 0.0, 'vinyl': 0.0},
+        'sc_depth': 0.70,
+        'master': {'hpf': 25, 'lpf': 19000, 'comp_thresh': -14, 'comp_ratio': 2.0},
+        'sample_hpf': (100, 180),
+        'arrangement': [
+            ('intro', 0, 8, False, 'full'),
+            ('breakdown1', 8, 20, False, 'full'),
+            ('buildup1', 20, 24, True, 'full'),
+            ('drop1', 24, 40, True, 'full'),
+            ('break1', 40, 44, False, 'full'),
+            ('drop2', 44, 56, True, 'full'),
+            ('breakdown2', 56, 60, False, 'slight_lpf'),
+            ('buildup2', 60, 64, True, 'full'),
+            ('drop3', 64, 80, True, 'full'),
+            ('break2', 80, 84, False, 'full'),
+            ('drop4', 84, 92, True, 'full'),
+            ('outro', 92, 96, False, 'lpf_sink'),
+        ],
+        'lofi': False, 'drum_break': False,
+        'room': (8.0, 6.0, 3.5, 0.20, 3, 0.30, 0.10),
+        'bass_pattern_type': 'four_pulse',
+        'album': 'Progressive House', 'genre_tag': 'Progressive House',
+    },
+    'rnb': {
+        'bpm_default': 75, 'bpm_range': (60, 95), 'bars': 64,
+        'jitter_ms': 18,
+        'clap_layer': False, 'clap_gain': 0.0,
+        'bass_type': 'sine_sub', 'bass_lpf': 200, 'bass_gain_db': 0.0,
+        'bass_comp': (-14, 2.5, 8, 120),
+        'mix': {'drums': 0.60, 'bass': 0.20, 'sample': 0.55, 'perc': 0.08, 'fx': 0.0, 'vinyl': 0.0},
+        'sc_depth': 0.35,
+        'master': {'hpf': 25, 'lpf': 17000, 'comp_thresh': -14, 'comp_ratio': 2.0},
+        'sample_hpf': (80, 150),
+        'arrangement': [
+            ('intro', 0, 8, False, 'full'),
+            ('verse1', 8, 24, True, 'full'),
+            ('breakdown1', 24, 28, False, 'full'),
+            ('hook1', 28, 40, True, 'full'),
+            ('verse2', 40, 52, True, 'slight_lpf'),
+            ('breakdown2', 52, 56, False, 'full'),
+            ('hook2', 56, 64, True, 'full'),
+        ],
+        'lofi': False, 'drum_break': False,
+        'room': (10.0, 8.0, 4.0, 0.15, 4, 0.50, 0.18),
+        'bass_pattern_type': 'walking',
+        'album': 'R&B Beats', 'genre_tag': 'R&B',
+    },
+    'drill': {
+        'bpm_default': 140, 'bpm_range': (130, 150), 'bars': 80,
+        'jitter_ms': 3,
+        'clap_layer': True, 'clap_gain': 0.40,
+        'bass_type': '808', 'bass_lpf': 1500, 'bass_gain_db': 0.0,
+        'bass_dur_beats': 3.0,
+        'bass_comp': (-10, 4.0, 2, 80),
+        'mix': {'drums': 0.70, 'bass': 0.30, 'sample': 0.45, 'perc': 0.10, 'fx': 0.0, 'vinyl': 0.0},
+        'sc_depth': 0.70,
+        'master': {'hpf': 25, 'lpf': 18000, 'comp_thresh': -14, 'comp_ratio': 2.0},
+        'sample_hpf': (120, 200),
+        'arrangement': [
+            ('intro', 0, 8, False, 'full'),
+            ('verse1', 8, 24, True, 'full'),
+            ('break1', 24, 28, False, 'full'),
+            ('hook1', 28, 44, True, 'full'),
+            ('break2', 44, 48, False, 'slight_lpf'),
+            ('verse2', 48, 64, True, 'full'),
+            ('hook2', 64, 76, True, 'full'),
+            ('outro', 76, 80, False, 'lpf_sink'),
+        ],
+        'lofi': False, 'drum_break': False,
+        'room': (5.0, 4.0, 3.0, 0.30, 2, 0.10, 0.04),
+        'bass_pattern_type': 'drill_slide',
+        'album': 'Drill Beats', 'genre_tag': 'Drill',
     },
     'melodic_trap': {
         'bpm_default': 140, 'bpm_range': (130, 150), 'bars': 96,
         'jitter_ms': 4,
-        'kick_beats': [0, 2], 'kick_ghost': 3.5, 'kick_ghost_pct': 0.25, 'kick_gain': 1.0,
-        'snare_beats': [1, 3], 'snare_ghost_pct': 0.0, 'snare_gain': 0.0,
         'clap_layer': True, 'clap_gain': 0.50, 'clap_offset_ms': 25,
-        'hat_pattern': '8th', 'hat_gain': 0.32, 'hat_32nd_rolls': False,
-        'ride': False,
         'bass_type': '808', 'bass_lpf': 1200, 'bass_gain_db': 3.0,
         'bass_dur_beats': 3.5,
         'bass_comp': (-10, 4.0, 2, 80),
@@ -145,7 +226,7 @@ GENRE_CONFIGS = {
         'master': {'hpf': 25, 'lpf': 19000, 'comp_thresh': -14, 'comp_ratio': 2.0},
         'sample_hpf': (140, 210),
         'arrangement': [
-            ('intro', 0, 8, False, 'lpf_sweep_up'),
+            ('intro', 0, 8, False, 'full'),
             ('hook1', 8, 24, True, 'full'),
             ('verse1', 24, 40, True, 'slight_lpf'),
             ('hook2', 40, 56, True, 'full'),
@@ -155,17 +236,67 @@ GENRE_CONFIGS = {
         ],
         'lofi': False, 'drum_break': False,
         'room': (6.0, 5.0, 3.5, 0.25, 3, 0.25, 0.10),
+        'bass_pattern_type': 'bounce',
         'album': 'Melodic Trap Beats', 'genre_tag': 'Trap',
+    },
+    '2hollis': {
+        'bpm_default': 150, 'bpm_range': (130, 165), 'bars': 64,
+        'jitter_ms': 1,
+        'clap_layer': True, 'clap_gain': 0.60, 'clap_offset_ms': 0,
+        'bass_type': 'reese', 'bass_lpf': 3000, 'bass_gain_db': 0.0,
+        'bass_dur_beats': 2.0,
+        'bass_comp': (-8, 5.0, 1, 60),
+        'mix': {'drums': 0.80, 'bass': 0.30, 'sample': 0.35, 'perc': 0.15, 'fx': 0.25, 'vinyl': 0.0},
+        'sc_depth': 0.85,
+        'master': {'hpf': 30, 'lpf': 19000, 'comp_thresh': -10, 'comp_ratio': 3.0},
+        'sample_hpf': (200, 300),
+        'arrangement': [
+            ('intro', 0, 4, False, 'full'),
+            ('drop1', 4, 20, True, 'full'),
+            ('break', 20, 24, False, 'underwater'),
+            ('drop2', 24, 40, True, 'full'),
+            ('ambient', 40, 44, False, 'underwater'),
+            ('drop3', 44, 60, True, 'full'),
+            ('outro', 60, 64, True, 'lpf_sink'),
+        ],
+        'lofi': True, 'lofi_intensity': 0.6,
+        'drum_break': False,
+        'room': (3.0, 2.5, 2.5, 0.50, 1, 0.06, 0.02),
+        'bass_pattern_type': 'root_only',
+        'album': '2Hollis Beats', 'genre_tag': 'Hyperpop',
+        'target_lufs': -10,
+    },
+    'techno': {
+        'bpm_default': 132, 'bpm_range': (124, 145), 'bars': 96,
+        'jitter_ms': 2,
+        'clap_layer': True, 'clap_gain': 0.30,
+        'bass_type': 'sine_sub', 'bass_lpf': 200, 'bass_gain_db': 0.0,
+        'bass_comp': (-10, 3.0, 3, 80),
+        'mix': {'drums': 0.75, 'bass': 0.15, 'sample': 0.40, 'perc': 0.0, 'fx': 0.0, 'vinyl': 0.0},
+        'sc_depth': 0.80,
+        'master': {'hpf': 30, 'lpf': 18000, 'comp_thresh': -12, 'comp_ratio': 2.5},
+        'sample_hpf': (150, 250),
+        'arrangement': [
+            ('intro', 0, 16, False, 'full'),
+            ('build1', 16, 32, True, 'full'),
+            ('break1', 32, 36, False, 'full'),
+            ('peak1', 36, 52, True, 'full'),
+            ('break2', 52, 56, False, 'slight_lpf'),
+            ('peak2', 56, 72, True, 'full'),
+            ('break3', 72, 76, False, 'full'),
+            ('peak3', 76, 88, True, 'full'),
+            ('outro', 88, 96, False, 'lpf_sink'),
+        ],
+        'lofi': False, 'drum_break': False,
+        'room': (4.0, 3.0, 3.0, 0.40, 2, 0.08, 0.03),
+        'bass_pattern_type': 'four_pulse',
+        'album': 'Techno', 'genre_tag': 'Techno',
     },
     'breakcore': {
         'bpm_default': 100, 'bpm_range': (85, 120), 'bars': 72,
         'jitter_ms': 2,
         'drum_mode': 'amen_chop',
-        'kick_beats': [], 'kick_ghost': None, 'kick_ghost_pct': 0, 'kick_gain': 0,
-        'snare_beats': [], 'snare_ghost_pct': 0, 'snare_gain': 0,
         'clap_layer': False, 'clap_gain': 0,
-        'hat_pattern': 'none', 'hat_gain': 0, 'hat_32nd_rolls': False,
-        'ride': False,
         'bass_type': 'sine_sub', 'bass_lpf': 200, 'bass_gain_db': 1.0,
         'bass_comp': (-10, 3.0, 3, 80),
         'mix': {'drums': 0.85, 'bass': 0.20, 'sample': 0.30, 'perc': 0.0, 'fx': 0.0, 'vinyl': 0.0},
@@ -173,7 +304,7 @@ GENRE_CONFIGS = {
         'master': {'hpf': 30, 'lpf': 18000, 'comp_thresh': -10, 'comp_ratio': 3.0},
         'sample_hpf': (200, 280),
         'arrangement': [
-            ('intro', 0, 8, False, 'lpf_sweep_up'),
+            ('intro', 0, 8, False, 'full'),
             ('drop1', 8, 24, True, 'full'),
             ('break', 24, 32, False, 'underwater'),
             ('drop2', 32, 48, True, 'full'),
@@ -184,6 +315,7 @@ GENRE_CONFIGS = {
         'lofi': True, 'lofi_intensity': 0.7, 'drum_break': False,
         'target_lufs': -12,
         'room': (4.0, 3.0, 2.5, 0.40, 2, 0.10, 0.04),
+        'bass_pattern_type': 'root_only',
         'album': 'Breakcore Beats', 'genre_tag': 'Breakcore',
     },
 }
@@ -210,6 +342,79 @@ def _glob_wavs(*patterns):
     return result
 
 
+# Cache for drum sample features (computed once per session)
+_drum_feature_cache = {}
+
+
+def _analyze_drum_sample(path):
+    """Compute spectral features for a drum one-shot. Cached."""
+    if path in _drum_feature_cache:
+        return _drum_feature_cache[path]
+    try:
+        audio = load_sample(path)
+        # Quick analysis on first 0.5s (one-shots are short)
+        clip = audio[:min(len(audio), int(SR * 0.5))]
+        spec = np.abs(np.fft.rfft(clip))
+        freqs = np.fft.rfftfreq(len(clip), 1.0 / SR)
+        total = spec.sum() + 1e-9
+        low = float(spec[freqs < 400].sum()) / total
+        high = float(spec[freqs > 4000].sum()) / total
+        mid = float(spec[(freqs >= 400) & (freqs <= 4000)].sum()) / total
+        rms = float(np.sqrt(np.mean(clip ** 2)))
+        centroid = float((spec * freqs).sum() / total)
+        feat = {'warmth': low, 'brightness': high, 'mid_presence': mid,
+                'rms': rms, 'centroid': centroid}
+    except Exception:
+        feat = {'warmth': 0.3, 'brightness': 0.3, 'mid_presence': 0.4,
+                'rms': 0.1, 'centroid': 2000}
+    _drum_feature_cache[path] = feat
+    return feat
+
+
+def _spectral_match(candidates, sample_char, prefer='complement'):
+    """Pick the best drum sample from candidates based on spectral fit to the input sample.
+
+    prefer='complement': bright sample → warm drums (and vice versa)
+    prefer='similar': match brightness/warmth closely
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    sample_vec = np.array([
+        sample_char.get('warmth', 0.3),
+        sample_char.get('brightness', 0.3),
+        sample_char.get('rms', 0.1),
+    ])
+
+    best_path, best_score = candidates[0], -999
+    for path in candidates:
+        feat = _analyze_drum_sample(path)
+        drum_vec = np.array([feat['warmth'], feat['brightness'], feat['rms']])
+
+        if prefer == 'complement':
+            # Complementary: bright sample wants warm drums, warm sample wants bright drums
+            # Score = inverse cosine similarity (more different = better)
+            dot = np.dot(sample_vec, drum_vec)
+            norm = (np.linalg.norm(sample_vec) * np.linalg.norm(drum_vec)) + 1e-9
+            score = 1.0 - (dot / norm)
+            # Also prefer similar energy level
+            energy_penalty = abs(sample_vec[2] - drum_vec[2]) * 2
+            score -= energy_penalty
+        else:
+            # Similar: cosine similarity (more similar = better)
+            dot = np.dot(sample_vec, drum_vec)
+            norm = (np.linalg.norm(sample_vec) * np.linalg.norm(drum_vec)) + 1e-9
+            score = dot / norm
+
+        if score > best_score:
+            best_score = score
+            best_path = path
+
+    return best_path
+
+
 def select_kit(genre, char, track_name):
     rng = np.random.RandomState(hash(track_name) % (2**31))
 
@@ -223,13 +428,13 @@ def select_kit(genre, char, track_name):
         percs = _glob_wavs(f'{VIRION}/Perc/*.wav', f'{MODTRAP}/Percs/*.wav')
         crashes = _glob_wavs(f'{VIRION}/Crash/*.wav')
         return {
-            'kick': kicks[rng.randint(len(kicks))] if kicks else None,
-            'bass_808': bass_808s[rng.randint(len(bass_808s))] if bass_808s else None,
-            'snare': snares[rng.randint(len(snares))] if snares else None,
-            'clap': claps[rng.randint(len(claps))] if claps else None,
-            'hat': hats[rng.randint(len(hats))] if hats else None,
-            'hat_open': ohs[rng.randint(len(ohs))] if ohs else None,
-            'perc': percs[rng.randint(len(percs))] if percs else None,
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'bass_808': _spectral_match(bass_808s, char, 'similar'),
+            'snare': _spectral_match(snares, char, 'complement'),
+            'clap': _spectral_match(claps, char, 'complement'),
+            'hat': _spectral_match(hats, char, 'complement'),
+            'hat_open': _spectral_match(ohs, char, 'complement'),
+            'perc': _spectral_match(percs, char, 'complement'),
             'crash': crashes[0] if crashes else None,
         }
 
@@ -243,13 +448,13 @@ def select_kit(genre, char, track_name):
         percs = _glob_wavs(f'{VIRION}/Perc/*.wav', f'{MODTRAP}/Percs/*.wav')
         crashes = _glob_wavs(f'{VIRION}/Crash/*.wav')
         return {
-            'kick': kicks[rng.randint(len(kicks))] if kicks else None,
-            'bass_808': bass_808s[rng.randint(len(bass_808s))] if bass_808s else None,
-            'snare': snares[rng.randint(len(snares))] if snares else None,
-            'clap': claps[rng.randint(len(claps))] if claps else None,
-            'hat': hats[rng.randint(len(hats))] if hats else None,
-            'hat_open': ohs[rng.randint(len(ohs))] if ohs else None,
-            'perc': percs[rng.randint(len(percs))] if percs else None,
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'bass_808': _spectral_match(bass_808s, char, 'similar'),
+            'snare': _spectral_match(snares, char, 'complement'),
+            'clap': _spectral_match(claps, char, 'complement'),
+            'hat': _spectral_match(hats, char, 'complement'),
+            'hat_open': _spectral_match(ohs, char, 'complement'),
+            'perc': _spectral_match(percs, char, 'complement'),
             'crash': crashes[0] if crashes else None,
         }
 
@@ -258,31 +463,134 @@ def select_kit(genre, char, track_name):
         snares = _glob_wavs(f'{OSHH}/One Shots/Snares_Rims_Claps/*.wav')
         hats = _glob_wavs(f'{OSHH}/One Shots/Hats/*.wav')
         percs = _glob_wavs(f'{OSHH}/One Shots/Perc/*.wav')
-        hat2 = hats[rng.randint(len(hats))]
-        oh = hats[rng.randint(len(hats))]
-        while oh == hat2 and len(hats) > 1:
-            oh = hats[rng.randint(len(hats))]
+        picked_hat = _spectral_match(hats, char, 'complement')
+        remaining_hats = [h for h in hats if h != picked_hat] or hats
+        oh = _spectral_match(remaining_hats, char, 'similar')
         return {
-            'kick': kicks[rng.randint(len(kicks))] if kicks else None,
-            'snare': snares[rng.randint(len(snares))] if snares else None,
-            'hat': hat2, 'hat_open': oh,
-            'perc': percs[rng.randint(len(percs))] if percs else None,
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'snare': _spectral_match(snares, char, 'complement'),
+            'hat': picked_hat, 'hat_open': oh,
+            'perc': _spectral_match(percs, char, 'complement'),
         }
 
     elif genre == 'jazzhouse':
         kicks = _glob_wavs(f'{BROOTLE}/*.wav', f'{HOUSE_OS}/Kicks/*.wav')
         rides = _glob_wavs(f'{CYM_HOUSE}/Cymbals/Rides/*.wav')
-        claps = _glob_wavs(f'{HOUSE_OS}/Claps/*.wav', f'{CYM_HOUSE}/Claps/*.wav')
-        hh_cl = _glob_wavs(f'{CYM_HOUSE}/Cymbals/Hihats - Closed/*.wav')
-        hh_op = _glob_wavs(f'{CYM_HOUSE}/Cymbals/Hihats - Open/*.wav')
-        percs = _glob_wavs(f'{CYM_HOUSE}/Percussion/*.wav')
+        hats = _glob_wavs(f'{OSHH}/One Shots/Hats/*.wav')
+        snares = _glob_wavs(f'{OSHH}/One Shots/Snares_Rims_Claps/*.wav')
+        percs = _glob_wavs(f'{OSHH}/One Shots/Perc/*.wav')
+        picked_hat = _spectral_match(hats, char, 'complement')
+        remaining_hats = [h for h in hats if h != picked_hat] or hats
+        oh = _spectral_match(remaining_hats, char, 'similar')
         return {
-            'kick': kicks[rng.randint(len(kicks))] if kicks else None,
-            'ride': rides[rng.randint(len(rides))] if rides else None,
-            'clap': claps[rng.randint(len(claps))] if claps else None,
-            'hat': hh_cl[rng.randint(len(hh_cl))] if hh_cl else None,
-            'hat_open': hh_op[rng.randint(len(hh_op))] if hh_op else None,
-            'perc': percs[rng.randint(len(percs))] if percs else None,
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'ride': _spectral_match(rides, char, 'similar'),
+            'clap': _spectral_match(snares, char, 'complement'),
+            'hat': picked_hat,
+            'hat_open': oh,
+            'perc': _spectral_match(percs, char, 'complement'),
+        }
+
+    elif genre == 'progressive_house':
+        kicks = _glob_wavs(f'{BROOTLE}/*.wav', f'{HOUSE_OS}/Kicks/*.wav')
+        hats = _glob_wavs(f'{OSHH}/One Shots/Hats/*.wav')
+        snares = _glob_wavs(f'{OSHH}/One Shots/Snares_Rims_Claps/*.wav')
+        crashes = _glob_wavs(f'{CYM_HOUSE}/Cymbals/Crashes/*.wav')
+        picked_hat = _spectral_match(hats, char, 'complement')
+        remaining_hats = [h for h in hats if h != picked_hat] or hats
+        oh = _spectral_match(remaining_hats, char, 'similar')
+        return {
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'clap': _spectral_match(snares, char, 'complement'),
+            'hat': picked_hat,
+            'hat_open': oh,
+            'crash': crashes[0] if crashes else None,
+        }
+
+    elif genre == 'techno':
+        kicks = _glob_wavs(f'{VIRION}/Kick/*.wav', f'{MODTRAP}/Kicks/*.wav')
+        hats = _glob_wavs(f'{OSHH}/One Shots/Hats/*.wav')
+        snares = _glob_wavs(f'{OSHH}/One Shots/Snares_Rims_Claps/*.wav')
+        crashes = _glob_wavs(f'{CYM_HOUSE}/Cymbals/Crashes/*.wav')
+        picked_hat = _spectral_match(hats, char, 'complement')
+        remaining_hats = [h for h in hats if h != picked_hat] or hats
+        oh = _spectral_match(remaining_hats, char, 'similar')
+        return {
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'clap': _spectral_match(snares, char, 'complement'),
+            'hat': picked_hat,
+            'hat_open': oh,
+            'crash': crashes[0] if crashes else None,
+        }
+
+    elif genre == 'rnb':
+        RNB1 = os.path.join(INSTR, 'rnb')
+        RNB2 = os.path.join(INSTR, 'rnb2')
+        kicks = _glob_wavs(f'{RNB1}/1. kick/*.wav', f'{RNB2}/1. KICK/*.wav')
+        snares = _glob_wavs(f'{RNB1}/2. snare + rim/snare/*.wav', f'{RNB2}/4. SNARE/*.wav')
+        claps = _glob_wavs(f'{RNB1}/7. clap/*.wav', f'{RNB2}/3. CLAP/*.wav')
+        hats = _glob_wavs(f'{RNB1}/3. hihat/hh/*.wav', f'{RNB2}/5. HIHAT - CLOSED/*.wav')
+        ohs = _glob_wavs(f'{RNB1}/3. hihat/oh/*.wav', f'{RNB2}/6. HIHAT - OPEN/*.wav')
+        percs = _glob_wavs(f'{RNB1}/4. perc/*.wav')
+        picked_hat = _spectral_match(hats, char, 'complement')
+        remaining_hats = [h for h in hats if h != picked_hat] or hats
+        oh = _spectral_match(remaining_hats, char, 'similar')
+        return {
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'snare': _spectral_match(snares, char, 'complement'),
+            'clap': _spectral_match(claps, char, 'complement'),
+            'hat': picked_hat,
+            'hat_open': oh,
+            'perc': _spectral_match(percs, char, 'complement'),
+        }
+
+    elif genre == 'drill':
+        DRILL1 = os.path.join(INSTR, 'drill1')
+        DRILL2 = os.path.join(INSTR, 'drill2')
+        DRILL3 = os.path.join(INSTR, 'drill3')
+        kicks = _glob_wavs(f'{DRILL1}/Kick/*.wav', f'{DRILL2}/Kick/*.wav',
+                           f'{DRILL3}/[SAINT6] Kicks/*.wav')
+        bass_808s = _glob_wavs(f'{DRILL1}/808/*.wav', f'{DRILL2}/808/*.wav',
+                               f'{DRILL3}/[SAINT6] 808s/*.wav')
+        snares = _glob_wavs(f'{DRILL1}/Snare/*.wav', f'{DRILL3}/[SAINT6] Drill Snares/*.wav')
+        claps = _glob_wavs(f'{DRILL1}/Snare/Clap/*.wav', f'{DRILL2}/Claps/*.wav',
+                           f'{DRILL3}/[SAINT6] Claps/*.wav')
+        hats = _glob_wavs(f'{DRILL1}/Hi Hat/*.wav', f'{DRILL2}/HH & CS/*.wav',
+                          f'{DRILL3}/[SAINT6] Hi Hats/*.wav')
+        ohs = _glob_wavs(f'{DRILL1}/Hi Hat/Open Hat/*.wav',
+                         f'{DRILL3}/[SAINT6] Open Hi Hats/*.wav')
+        percs = _glob_wavs(f'{DRILL1}/Perc/*.wav', f'{DRILL2}/Percs/*.wav',
+                           f'{DRILL3}/[SAINT6] Percs/*.wav')
+        crashes = _glob_wavs(f'{DRILL3}/[SAINT6] Crashes/*.wav')
+        return {
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'bass_808': _spectral_match(bass_808s, char, 'similar'),
+            'snare': _spectral_match(snares, char, 'complement'),
+            'clap': _spectral_match(claps, char, 'complement'),
+            'hat': _spectral_match(hats, char, 'complement'),
+            'hat_open': _spectral_match(ohs, char, 'complement'),
+            'perc': _spectral_match(percs, char, 'complement'),
+            'crash': crashes[0] if crashes else None,
+        }
+
+    elif genre == '2hollis':
+        kicks = _glob_wavs(f'{VIRION}/Kick/*.wav', f'{MODTRAP}/Kicks/*.wav')
+        bass_808s = _glob_wavs(f'{VIRION}/808/*.wav', f'{METRO808}/*.wav', f'{RAP2_808}/*.wav')
+        snares = _glob_wavs(f'{VIRION}/Snare/*.wav', f'{MODTRAP}/Snares/*.wav')
+        claps = _glob_wavs(f'{MODTRAP}/Claps/*.wav')
+        hats = _glob_wavs(f'{VIRION}/Hi-Hat/*.wav', f'{MODTRAP}/Closed Hats/*.wav')
+        ohs = _glob_wavs(f'{VIRION}/Open Hat/*.wav', f'{MODTRAP}/Open Hats/*.wav')
+        percs = _glob_wavs(f'{VIRION}/Perc/*.wav', f'{MODTRAP}/Percs/*.wav')
+        crashes = _glob_wavs(f'{VIRION}/Crash/*.wav')
+        return {
+            'kick': _spectral_match(kicks, char, 'complement'),
+            'bass_808': _spectral_match(bass_808s, char, 'similar'),
+            'snare': _spectral_match(snares, char, 'complement'),
+            'clap': _spectral_match(claps, char, 'complement'),
+            'hat': _spectral_match(hats, char, 'complement'),
+            'hat_open': _spectral_match(ohs, char, 'complement'),
+            'perc': _spectral_match(percs, char, 'complement'),
+            'crash': crashes[0] if crashes else None,
         }
 
     elif genre == 'breakcore':
@@ -523,224 +831,103 @@ def generate_reese_bass(freq_hz, duration_s, sr=SR):
 # Generic Drum Programmer
 # =============================================================================
 
-def program_drums(cfg, nbars, BAR, BEAT, NSAMP, kit, rng):
-    """Program all drums from genre config. Returns dict of stereo buffers + kick_env."""
+def program_drums(cfg, nbars, BAR, BEAT, NSAMP, kit, rng, drum_events=None):
+    """Program drums from LLM-generated MIDI events. Returns dict of stereo buffers + kick_env."""
     jitter = int(cfg['jitter_ms'] / 1000 * SR)
-    bufs = {}
-
-    # Helper to check if a bar is in an active section
-    arr = cfg['arrangement']
-    def section_at(bar):
-        for name, s, e, kick_on, fx in arr:
-            if s <= bar < e:
-                return name, kick_on
-        return 'none', False
-
-    def is_outro(bar):
-        for name, s, e, _, _ in arr:
-            if name == 'outro' and s <= bar < e:
-                return (bar - s) / max(e - s - 1, 1)
-        return -1
 
     def b2s(bar, beat=0.0):
         return bar_to_s(bar, beat, BAR)
 
-    # --- KICK ---
+    # --- Allocate buffers ---
     kick_L = np.zeros(NSAMP, dtype=np.float32)
     kick_R = np.zeros(NSAMP, dtype=np.float32)
     kick_env = np.zeros(NSAMP, dtype=np.float32)
+    snare_L = np.zeros(NSAMP, dtype=np.float32)
+    snare_R = np.zeros(NSAMP, dtype=np.float32)
+    hh_L = np.zeros(NSAMP, dtype=np.float32)
+    hh_R = np.zeros(NSAMP, dtype=np.float32)
+    ride_L = np.zeros(NSAMP, dtype=np.float32)
+    ride_R = np.zeros(NSAMP, dtype=np.float32)
+    perc_L = np.zeros(NSAMP, dtype=np.float32)
+    perc_R = np.zeros(NSAMP, dtype=np.float32)
+    crash_L = np.zeros(NSAMP, dtype=np.float32)
+    crash_R = np.zeros(NSAMP, dtype=np.float32)
+
+    # --- Load samples ---
     KICK = load_sample(kit['kick']) if kit.get('kick') else None
-    kick_count = 0
+    SNARE = load_sample(kit.get('snare') or kit.get('clap')) if kit.get('snare') or kit.get('clap') else None
+    CLAP = load_sample(kit['clap']) if kit.get('clap') else None
+    HH = load_sample(kit['hat']) if kit.get('hat') else None
+    HH_OP = load_sample(kit['hat_open']) if kit.get('hat_open') else None
+    CRASH = load_sample(kit['crash']) if kit.get('crash') else None
+    RIDE = load_sample(kit['ride']) if kit.get('ride') else None
+    PERC = load_sample(kit['perc']) if kit.get('perc') else None
 
-    if KICK is not None:
-        intro_end = arr[0][2] if arr else 8
-        for bar in range(nbars):
-            _, kick_on = section_at(bar)
-            if not kick_on:
+    # GM note -> (sample, buf_L, buf_R)
+    NOTE_MAP = {
+        36: (KICK, kick_L, kick_R),
+        38: (SNARE, snare_L, snare_R),
+        39: (CLAP, snare_L, snare_R),
+        42: (HH, hh_L, hh_R),
+        46: (HH_OP, hh_L, hh_R),
+        49: (CRASH, crash_L, crash_R),
+        51: (RIDE, ride_L, ride_R),
+        37: (PERC, perc_L, perc_R),
+        56: (PERC, perc_L, perc_R),
+    }
+
+    # --- Place events ---
+    patterns, bar_sequence = drum_events
+    counts = {'kick': 0, 'snare': 0, 'clap': 0, 'hat': 0, 'open_hat': 0,
+              'crash': 0, 'ride': 0, 'perc': 0}
+    count_map = {36: 'kick', 38: 'snare', 39: 'clap', 42: 'hat',
+                 46: 'open_hat', 49: 'crash', 51: 'ride', 37: 'perc', 56: 'perc'}
+
+    for bar in range(nbars):
+        pat_id = bar_sequence[bar] if bar < len(bar_sequence) else 'silent'
+        events = patterns.get(pat_id, [])
+
+        for ev in events:
+            if len(ev) < 3:
                 continue
-            outro_prog = is_outro(bar)
-            if outro_prog > 0.6:
+            beat, note, vel = float(ev[0]), int(ev[1]), int(ev[2])
+            mapping = NOTE_MAP.get(note)
+            if not mapping or mapping[0] is None:
                 continue
+            snd, buf_l, buf_r = mapping
 
-            beats = list(cfg['kick_beats'])
-            if cfg['kick_ghost'] and rng.random() < cfg['kick_ghost_pct']:
-                beats.append(cfg['kick_ghost'])
+            pos = int(b2s(bar, beat) * SR) + rng.randint(-jitter, jitter + 1)
+            pos = max(0, pos)
+            gain = vel / 127.0
 
-            for beat in beats:
-                pos = int(b2s(bar, beat) * SR) + rng.randint(-jitter, jitter + 1)
-                pos = max(0, pos)
-                vel = rng.uniform(0.85, 1.0)
-                if beat == 0:
-                    vel *= 1.05
-                if beat == cfg.get('kick_ghost'):
-                    vel *= 0.60
-                g = vel * cfg['kick_gain']
-                place(kick_L, kick_R, KICK, pos, g, g)
+            # Clap layering: if note is snare (38) and clap_layer enabled, also place clap
+            if note == 38 and cfg.get('clap_layer') and CLAP is not None:
+                clap_ms = cfg.get('clap_offset_ms', 5)
+                clap_offset = int(clap_ms / 1000.0 * SR) + rng.randint(0, max(1, int(0.002 * SR)))
+                clap_gain = gain * cfg.get('clap_gain', 0.4)
+                place(snare_L, snare_R, CLAP, pos + clap_offset,
+                      clap_gain * 0.95, clap_gain * 1.05)
+
+            # Hat panning (slight L/R alternation)
+            if note in (42, 46):
+                pan = rng.uniform(0.43, 0.57)
+                place(buf_l, buf_r, snd, pos, gain * pan * 2, gain * (1 - pan) * 2)
+            else:
+                place(buf_l, buf_r, snd, pos, gain, gain)
+
+            # Kick sidechain envelope
+            if note == 36:
                 env_len = min(int(0.07 * SR), NSAMP - pos)
                 if env_len > 0 and pos + env_len <= NSAMP:
                     kick_env[pos:pos + env_len] = np.maximum(
                         kick_env[pos:pos + env_len],
                         np.linspace(1, 0, env_len).astype(np.float32))
-                kick_count += 1
 
-    print(f'  Kicks: {kick_count}')
+            counts[count_map.get(note, 'perc')] += 1
 
-    # --- SNARE / CLAP ---
-    snare_L = np.zeros(NSAMP, dtype=np.float32)
-    snare_R = np.zeros(NSAMP, dtype=np.float32)
-    SNARE = load_sample(kit.get('snare') or kit.get('clap')) if kit.get('snare') or kit.get('clap') else None
-    CLAP = load_sample(kit['clap']) if cfg['clap_layer'] and kit.get('clap') else None
-    snare_count = 0
-
-    if SNARE is not None:
-        for bar in range(nbars):
-            _, kick_on = section_at(bar)
-            # Snare plays in all active sections (kick_on sections + some non-kick)
-            sec_name, _ = section_at(bar)
-            if sec_name in ('intro', 'none'):
-                continue
-            # For boombap: snare enters at bar 6
-            if cfg.get('jitter_ms', 0) >= 15 and bar < 6:
-                continue
-            outro_prog = is_outro(bar)
-            if outro_prog > 0.5:
-                continue
-
-            beats = list(cfg['snare_beats'])
-            if rng.random() < cfg['snare_ghost_pct']:
-                ghost = rng.choice([0.5, 1.5, 2.5, 3.5])
-                beats.append(ghost)
-
-            for beat in beats:
-                pos = int(b2s(bar, beat) * SR) + rng.randint(-jitter, jitter + 1)
-                pos = max(0, pos)
-                vel = rng.uniform(0.80, 1.0)
-                if beat not in cfg['snare_beats']:
-                    vel *= 0.30
-                g = vel * cfg['snare_gain']
-                place(snare_L, snare_R, SNARE, pos, g, g)
-                if CLAP is not None and cfg.get('clap_layer') and beat in cfg['snare_beats']:
-                    clap_ms = cfg.get('clap_offset_ms', 5)
-                    clap_offset = int(clap_ms / 1000.0 * SR) + rng.randint(0, max(1, int(0.002 * SR)))
-                    place(snare_L, snare_R, CLAP, pos + clap_offset,
-                          vel * cfg['clap_gain'] * 0.95, vel * cfg['clap_gain'] * 1.05)
-                snare_count += 1
-
-    print(f'  Snare/Clap: {snare_count}')
-
-    # --- HI-HATS ---
-    hh_L = np.zeros(NSAMP, dtype=np.float32)
-    hh_R = np.zeros(NSAMP, dtype=np.float32)
-    HH = load_sample(kit['hat']) if kit.get('hat') else None
-    HH_OP = load_sample(kit['hat_open']) if kit.get('hat_open') else None
-    hh_count, oh_count = 0, 0
-    hh_jitter = min(jitter, int(0.003 * SR)) if cfg['hat_pattern'] in ('16th_quiet',) else jitter
-
-    if HH is not None:
-        for bar in range(nbars):
-            sec_name, _ = section_at(bar)
-            if sec_name in ('intro', 'none'):
-                continue
-            outro_prog = is_outro(bar)
-            if outro_prog > 0.7:
-                continue
-
-            if cfg['hat_pattern'] == '8th':
-                steps, step_size = 8, 0.5
-            else:
-                steps, step_size = 16, 0.25
-
-            for i in range(steps):
-                beat = i * step_size
-                pos = int(b2s(bar, beat) * SR) + rng.randint(-hh_jitter, hh_jitter + 1)
-                pos = max(0, pos)
-
-                if cfg['hat_pattern'] == '8th':
-                    vel = rng.uniform(0.55, 0.80) if i % 2 == 0 else rng.uniform(0.30, 0.55)
-                elif cfg['hat_pattern'] == '16th_quiet':
-                    if i % 4 == 0: vel = rng.uniform(0.35, 0.45)
-                    elif i % 2 == 0: vel = rng.uniform(0.22, 0.32)
-                    else: vel = rng.uniform(0.12, 0.20)
-                else:  # 16th_rolling
-                    if i % 4 == 0: vel = rng.uniform(0.80, 1.0)
-                    elif i % 2 == 0: vel = rng.uniform(0.50, 0.70)
-                    else: vel = rng.uniform(0.25, 0.45)
-
-                g = vel * cfg['hat_gain']
-                pan_l = 0.47 if i % 2 == 0 else 0.53
-                place(hh_L, hh_R, HH, pos, g * pan_l / 0.5, g * (1 - pan_l) / 0.5)
-                hh_count += 1
-
-            # 32nd rolls (trap only)
-            if cfg['hat_32nd_rolls'] and bar % 4 in [2, 3]:
-                sec_name, kick_on = section_at(bar)
-                if kick_on:
-                    for i in range(8, 16):
-                        beat = i * 0.25
-                        for sub in [0.125]:
-                            pos = int(b2s(bar, beat + sub) * SR)
-                            pos = max(0, pos)
-                            vel = rng.uniform(0.20, 0.40)
-                            place(hh_L, hh_R, HH, pos, vel * cfg['hat_gain'] * 0.7,
-                                  vel * cfg['hat_gain'] * 0.7)
-                            hh_count += 1
-
-    # Open hat accents
-    if HH_OP is not None:
-        oh_interval = 2 if cfg.get('ride') else rng.randint(2, 5)
-        oh_beat = 1.5 if cfg.get('ride') else 3.5
-        for bar in range(arr[1][1] if len(arr) > 1 else 8, nbars - 8, oh_interval):
-            pos = int(b2s(bar, oh_beat) * SR) + rng.randint(-hh_jitter, hh_jitter + 1)
-            pos = max(0, pos)
-            place(hh_L, hh_R, HH_OP, pos, 0.10, 0.10)
-            oh_count += 1
-
-    print(f'  HH: {hh_count}  OH: {oh_count}')
-
-    # --- RIDE (jazz house only) ---
-    ride_L = np.zeros(NSAMP, dtype=np.float32)
-    ride_R = np.zeros(NSAMP, dtype=np.float32)
-    ride_count = 0
-
-    if cfg.get('ride') and kit.get('ride'):
-        RIDE = load_sample(kit['ride'])
-        ride_jitter = int(0.003 * SR)
-        for bar in range(nbars):
-            sec_name, _ = section_at(bar)
-            if sec_name in ('intro', 'none'):
-                continue
-            outro_prog = is_outro(bar)
-            if outro_prog > 0.7:
-                continue
-            for eighth in range(8):
-                beat = eighth * 0.5
-                pos = int(b2s(bar, beat) * SR) + rng.randint(-ride_jitter, ride_jitter + 1)
-                pos = max(0, pos)
-                vel = rng.uniform(0.55, 0.65) if eighth % 2 == 0 else rng.uniform(0.40, 0.50)
-                g = vel * cfg.get('ride_gain', 0.18)
-                place(ride_L, ride_R, RIDE, pos, g * 0.90, g * 1.10)
-                ride_count += 1
-        print(f'  Ride: {ride_count}')
-
-    # --- PERCUSSION ---
-    perc_L = np.zeros(NSAMP, dtype=np.float32)
-    perc_R = np.zeros(NSAMP, dtype=np.float32)
-    PERC = load_sample(kit['perc']) if kit.get('perc') else None
-    perc_count = 0
-
-    if PERC is not None and cfg['mix'].get('perc', 0) > 0:
-        for bar in range(nbars):
-            sec_name, kick_on = section_at(bar)
-            if sec_name in ('intro', 'outro', 'none'):
-                continue
-            if rng.random() < 0.50:
-                pos = int(b2s(bar, 1.5) * SR) + rng.randint(-jitter, jitter + 1)
-                pos = max(0, pos)
-                vel = rng.uniform(0.25, 0.45)
-                pan = rng.uniform(0.35, 0.65)
-                place(perc_L, perc_R, PERC, pos, vel * pan, vel * (1 - pan))
-                perc_count += 1
-        print(f'  Perc: {perc_count}')
+    print(f'  Kicks: {counts["kick"]}  Snare: {counts["snare"]}  Clap: {counts["clap"]}')
+    print(f'  HH: {counts["hat"]}  OH: {counts["open_hat"]}  Ride: {counts["ride"]}')
+    print(f'  Crash: {counts["crash"]}  Perc: {counts["perc"]}')
 
     bufs = {
         'kick_L': kick_L, 'kick_R': kick_R, 'kick_env': kick_env,
@@ -771,12 +958,7 @@ def arrange_sample(sample_bed, cfg, BAR, NSAMP, name):
         if seg_len <= 0:
             continue
 
-        if fx == 'lpf_sweep_up':
-            start_cut = arr_rng.randint(250, 500)
-            audio = lpf_sweep(sample_bed[s:e], SR, start_cutoff=start_cut, end_cutoff=14000)
-            vol = np.linspace(0.25, 0.85, seg_len).astype(np.float32)
-            samp_out[s:e] = audio * vol
-        elif fx == 'full':
+        if fx == 'full':
             samp_out[s:e] = sample_bed[s:e]
         elif fx == 'slight_lpf':
             styles = ['lpf', 'vol_dip', 'full_quiet']
@@ -789,11 +971,8 @@ def arrange_sample(sample_bed, cfg, BAR, NSAMP, name):
             else:
                 samp_out[s:e] = sample_bed[s:e] * 0.90
         elif fx == 'underwater':
-            mid = seg_len // 2
-            first = lpf_sweep(sample_bed[s:s + mid], SR, 10000, 350)
-            second = lpf_sweep(sample_bed[s + mid:e], SR, 350, 12000)
-            samp_out[s:s + mid] = first * 1.1
-            samp_out[s + mid:e] = second * 1.1
+            audio = lpf_sweep(sample_bed[s:e], SR, 800, 800)
+            samp_out[s:e] = audio * 1.1
         elif fx == 'lpf_sink':
             audio = lpf_sweep(sample_bed[s:e], SR, 12000, 250)
             vol = np.linspace(0.85, 0.0, seg_len).astype(np.float32)
@@ -810,7 +989,7 @@ def arrange_sample(sample_bed, cfg, BAR, NSAMP, name):
 
 def render(sample_path, name, genre='trap', bpm_hint=None, nbars=None,
            loop_start=None, loop_end=None, metronome=False, lofi=None,
-           no_bass=False):
+           no_bass=False, vinyl_slow=False, drums_json=None):
 
     cfg = GENRE_CONFIGS[genre]
     if bpm_hint is None:
@@ -829,6 +1008,15 @@ def render(sample_path, name, genre='trap', bpm_hint=None, nbars=None,
 
     char = analyze_sample_character(raw_sample, SR)
     print(f'  Centroid: {int(char["centroid"])} Hz  |  Warmth: {char["warmth"]:.2f}  |  Brightness: {char["brightness"]:.2f}')
+
+    # Vocal detection — switch to underwater + raise HPF
+    has_vocals, vocal_conf = detect_vocals(raw_sample, SR)
+    if has_vocals and vocal_conf > 0.60:
+        print(f'  VOCALS DETECTED (confidence={vocal_conf:.2f}) → raised HPF')
+        cfg = dict(cfg)
+        cfg['sample_hpf'] = (250, 350)
+    else:
+        print(f'  No vocals detected (confidence={vocal_conf:.2f})')
 
     detected_bpm = detect_sample_tempo(raw_sample, SR, target_bpm=bpm_hint,
                                        bpm_range=cfg['bpm_range'])
@@ -856,18 +1044,10 @@ def render(sample_path, name, genre='trap', bpm_hint=None, nbars=None,
     else:
         loop, n_loop_bars = extract_loop_auto(raw_sample, SR, target_bpm=bpm)
 
-    # BPM sanity check
+    # Consolidated tempo detection + alignment
+    loop, bpm, n_loop_bars = detect_and_align_loop(
+        loop, SR, cfg['bpm_range'], bpm_hint, vinyl_mode=vinyl_slow)
     loop_dur = len(loop) / SR
-    best_bars, best_bpm, best_dist = n_loop_bars, n_loop_bars * 4 * 60.0 / loop_dur if loop_dur > 0 else bpm_hint, 999
-    for try_bars in range(1, max(n_loop_bars, 1) + 1):
-        try_bpm = try_bars * 4 * 60.0 / loop_dur if loop_dur > 0 else bpm_hint
-        dist = abs(try_bpm - bpm_hint)
-        if dist < best_dist:
-            best_dist, best_bars, best_bpm = dist, try_bars, try_bpm
-    if best_bars != n_loop_bars:
-        print(f'  Bar count adjusted: {n_loop_bars} → {best_bars} (BPM {n_loop_bars*4*60.0/loop_dur:.0f} → {best_bpm:.0f})')
-    n_loop_bars = best_bars
-    bpm = best_bpm
 
     BEAT = 60.0 / bpm
     BAR = BEAT * 4
@@ -917,12 +1097,14 @@ def render(sample_path, name, genre='trap', bpm_hint=None, nbars=None,
     room_ir = np.array(room.rir[0][0], dtype=np.float32)[:int(SR * ir_len)]
     room_ir /= (np.abs(room_ir).max() + 1e-9)
 
-    # --- Program drums ---
+    # --- Generate drum patterns (LLM or fallback) ---
     print(f'\nStep 3: Programming drums ...')
     if cfg.get('drum_mode') == 'amen_chop':
         bufs = program_breakbeats(cfg, nbars, BAR, BEAT, NSAMP, rng)
     else:
-        bufs = program_drums(cfg, nbars, BAR, BEAT, NSAMP, kit, rng)
+        drum_events = get_drum_patterns(
+            genre, nbars, cfg['arrangement'], drums_json=drums_json)
+        bufs = program_drums(cfg, nbars, BAR, BEAT, NSAMP, kit, rng, drum_events=drum_events)
 
     # Drum break (boombap)
     break_buf = np.zeros((NSAMP, 2), dtype=np.float32)
@@ -971,6 +1153,22 @@ def render(sample_path, name, genre='trap', bpm_hint=None, nbars=None,
     else:
         print('\nStep 5: Programming bass ...')
         bass_count = 0
+        bass_pat = BASS_PATTERNS.get(cfg.get('bass_pattern_type', 'root_only'), [(0, 0.0)])
+        print(f'  Bass pattern: {cfg.get("bass_pattern_type", "root_only")} ({len(bass_pat)} notes/bar)')
+
+        # Pre-load 808 sample and detect root once if using 808 type
+        bass_808_sample = None
+        bass_808_root_freq = 55.0
+        if cfg['bass_type'] == '808' and kit.get('bass_808'):
+            bass_808_sample = load_sample(kit['bass_808'])
+            clip = bass_808_sample[:SR]
+            spec = np.abs(np.fft.rfft(clip))
+            freqs_arr = np.fft.rfftfreq(len(clip), 1.0 / SR)
+            sub_mask = (freqs_arr > 30) & (freqs_arr < 200)
+            if sub_mask.any():
+                bass_808_root_freq = freqs_arr[sub_mask][np.argmax(spec[sub_mask])]
+            from audio_utils import pitch_shift_sample
+
         for bar in range(nbars):
             sec_name, kick_on = None, False
             for sn, s, e, ko, _ in cfg['arrangement']:
@@ -982,39 +1180,33 @@ def render(sample_path, name, genre='trap', bpm_hint=None, nbars=None,
             if sec_name == 'outro':
                 continue
             root_midi = bass_pattern[bar]
-            freq = 440.0 * (2.0 ** ((root_midi - 69) / 12.0))
-            if cfg['bass_type'] == '808' and kit.get('bass_808'):
-                bass_808 = load_sample(kit['bass_808'])
-                bass_808_clip = bass_808[:SR]
-                spec = np.abs(np.fft.rfft(bass_808_clip))
-                freqs_arr = np.fft.rfftfreq(len(bass_808_clip), 1.0 / SR)
-                sub_mask = (freqs_arr > 30) & (freqs_arr < 200)
-                bass_root_freq = freqs_arr[sub_mask][np.argmax(spec[sub_mask])] if sub_mask.any() else 55.0
-                semitones = 12 * np.log2(freq / bass_root_freq)
-                from audio_utils import pitch_shift_sample
-                shifted = pitch_shift_sample(bass_808, semitones)
-                bass_dur = cfg.get('bass_dur_beats', 2) * BEAT
-                max_len = int(bass_dur * SR)
-                shifted = shifted[:max_len]
-                rel = min(int(0.08 * SR), len(shifted) // 3)
-                if rel > 0:
-                    shifted[-rel:] *= np.linspace(1, 0, rel).astype(np.float32)
-                pos = int(bar_to_s(bar, 0, BAR) * SR)
-                vel = rng.uniform(0.85, 1.0)
-                place(bass_L, bass_R, shifted, pos, vel, vel)
-            elif cfg['bass_type'] == 'reese':
-                dur = BEAT * 2
-                pos = int(bar_to_s(bar, 0, BAR) * SR)
-                note = generate_reese_bass(freq, dur, SR)
-                vel = rng.uniform(0.70, 0.90)
-                place(bass_L, bass_R, note, pos, vel, vel)
-            else:
-                dur = BEAT * 1.5
-                pos = int(bar_to_s(bar, 0, BAR) * SR)
-                note = generate_sub_bass(freq, dur, SR)
-                vel = rng.uniform(0.75, 0.90)
-                place(bass_L, bass_R, note, pos, vel, vel)
-            bass_count += 1
+
+            for semitone_offset, beat_pos in bass_pat:
+                midi_note = root_midi + semitone_offset
+                freq = 440.0 * (2.0 ** ((midi_note - 69) / 12.0))
+                pos = int(bar_to_s(bar, beat_pos, BAR) * SR)
+
+                if cfg['bass_type'] == '808' and bass_808_sample is not None:
+                    semitones = 12 * np.log2(freq / bass_808_root_freq)
+                    shifted = pitch_shift_sample(bass_808_sample, semitones)
+                    bass_dur = cfg.get('bass_dur_beats', 2) * BEAT
+                    shifted = shifted[:int(bass_dur * SR)]
+                    rel = min(int(0.08 * SR), len(shifted) // 3)
+                    if rel > 0:
+                        shifted[-rel:] *= np.linspace(1, 0, rel).astype(np.float32)
+                    vel = rng.uniform(0.85, 1.0)
+                    place(bass_L, bass_R, shifted, pos, vel, vel)
+                elif cfg['bass_type'] == 'reese':
+                    dur = BEAT * 1.5
+                    snd = generate_reese_bass(freq, dur, SR)
+                    vel = rng.uniform(0.70, 0.90)
+                    place(bass_L, bass_R, snd, pos, vel, vel)
+                else:
+                    dur = BEAT * 1.0
+                    snd = generate_sub_bass(freq, dur, SR)
+                    vel = rng.uniform(0.75, 0.90)
+                    place(bass_L, bass_R, snd, pos, vel, vel)
+                bass_count += 1
         print(f'  Bass hits: {bass_count}')
         bass_buf = np.stack([bass_L, bass_R], axis=1)
         ct, cr, ca, crel = cfg['bass_comp']
@@ -1037,9 +1229,12 @@ def render(sample_path, name, genre='trap', bpm_hint=None, nbars=None,
     # --- Gross Beat FX ---
     print('\nStep 8: Gross Beat FX ...')
     transition_bars = []
-    for sec_name, s, e, _, _ in cfg['arrangement']:
+    for sec_name, s, e, kick_on, _ in cfg['arrangement']:
         if sec_name not in ('intro',):
-            transition_bars.append(e - 1)
+            transition_bars.append(e - 1)  # last bar of section
+        # Also add first bar of breaks for variety
+        if not kick_on and sec_name not in ('intro', 'outro'):
+            transition_bars.append(s)
     # Remove duplicates and last bar
     transition_bars = sorted(set(b for b in transition_bars if b < nbars - 1))
     samp_out, gb_log = apply_gross_beat(samp_out, SR, BAR, nbars, transition_bars, track_name=name)
@@ -1178,7 +1373,9 @@ if __name__ == '__main__':
     parser.add_argument('--lofi', type=float, default=None)
     parser.add_argument('--metronome', action='store_true')
     parser.add_argument('--no-bass', action='store_true', help='Disable bass')
+    parser.add_argument('--vinyl-slow', action='store_true', help='Pitch+speed linked slowdown (vinyl effect)')
+    parser.add_argument('--drums', type=str, default=None, help='Path to drum pattern JSON (generated by Claude Code)')
     args = parser.parse_args()
     render(args.sample, args.name, args.genre, args.bpm, args.bars,
            args.loop_start, args.loop_end, args.metronome, args.lofi,
-           no_bass=args.no_bass)
+           no_bass=args.no_bass, vinyl_slow=args.vinyl_slow, drums_json=args.drums)

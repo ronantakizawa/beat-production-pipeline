@@ -342,3 +342,4 @@ Time/volume manipulation effects applied to the **sample channel only** (drums p
 - Transition FX: **short and minimal** — 1-2 elements max
 - **Hi-hats: SIMPLE by default** — straight 8th notes with on-beat/off-beat velocity contrast. No 16th rolling, no 32nd rolls, no triplet hats unless a reference track analysis explicitly shows them. Complex hat patterns distract from melodies and sound overproduced.
 - **Snares/claps: SIMPLE by default** — clap on 2 and 4 only. No ghost snares, no syncopated extra hits, no snare rolls mid-bar. The backbeat should be steady and predictable. Only add ghost notes if the reference analysis `drum_pattern` contains them.
+- **Bass/808 should be QUIET** — bass sits low in the mix, supporting the beat without dominating. Keep bass mix coefficients at 0.30 or below and bass gain at 0dB. The beat should be driven by drums and melody, not bass.
